@@ -1,0 +1,252 @@
+;; -*- mode: clojure -*-
+
+(def defmacro
+  (macro [name args & body]
+    (list 'def name
+          (list* 'macro name args body))))
+
+(defmacro do [& forms]
+  (list (list* 'fn [] forms)))
+
+(defmacro defn [name args & body]
+  (list 'def name
+        (list* 'fn name args body)))
+
+(defmacro if-not [test then else]
+  (list 'if (list 'not test) then else))
+
+(defmacro when [test & body]
+  (list 'if test
+        (cons 'do body)
+        nil))
+
+(defmacro when-not [test & body]
+  (list* 'when (list 'not test) body))
+
+(defn reduce [f val coll]
+  (if (seq coll)
+    (reduce f (f val (first coll)) (rest coll))
+    val))
+
+(defn fold-right [f val coll]
+  (if (seq coll)
+    (f (first coll) (fold-right f val (rest coll)))
+    val))
+
+(defn map [f coll]
+  (reduce (fn [result x] (conj result (f x)))
+          []
+          coll))
+
+(defn mapcat [f coll]
+  (reduce (fn [result x] (into result (f x)))
+          []
+          coll))
+
+(defmacro let [bindings & body]
+  (when-not (even? (count bindings))
+    (error "let requires an even number of forms in binding vector"))
+  (reduce (fn [result binding]
+            (list (list 'fn
+                        (vector (first binding))
+                        result)
+                  (second binding)))
+          (cons 'do body)
+          (reverse (partition-all 2 bindings))))
+
+(defmacro let* [bindings & body]
+  (when-not (even? (count bindings))
+    (error "let* requires an even number of forms in binding vector"))
+  (cons (list* 'fn (vec (take-nth 2 bindings))
+               body)
+        (take-nth 2 (rest bindings))))
+
+(defmacro when-let [binding & body]
+  (when-not (= (count binding) 2)
+    (error "when-let requires exactly two forms in binding vector"))
+  (let [name (first binding)
+        expr (second binding)]
+    (list 'let [name expr]
+          (list* 'when name body))))
+
+(defmacro if-let [binding then else]
+  (when-not (= (count binding) 2)
+    (error "if-let requires exactly two forms in binding vector"))
+  (let [name (first binding)
+        expr (second binding)]
+    (list 'let [name expr]
+          (list 'if name then else))))
+
+(defmacro cond [& clauses]
+  (reduce (fn [result clause]
+            (if (= (count clause) 2)
+              (list 'if (first clause) (second clause) result)
+              (error "odd number of clauses to cond")))
+          nil
+          (reverse (partition-all 2 clauses))))
+
+(defmacro condp [pred expr & clauses]
+  ;; TODO: See if I can clean this up
+  (let [reversed (reverse (partition-all 2 clauses))
+        default? (= (count (first reversed)) 1)
+        default (if default?
+                  (cons 'do (first reversed))
+                  (list 'error "condp: no matching clause"))
+        clauses (if default?
+                  (rest reversed)
+                  reversed)
+        pred-sym (gensym)
+        expr-sym (gensym)]
+    (list 'let [pred-sym pred expr-sym expr]
+          (reduce (fn [result clause]
+                    (list 'if
+                          (list pred-sym (first clause) expr-sym)
+                          (second clause)
+                          result))
+                  default
+                  clauses))))
+
+(defmacro and [& forms]
+  (if (seq forms)
+    (let [reversed (reverse forms)]
+      (reduce (fn [result form]
+                (let [sym (gensym)]
+                  (list 'let [sym form]
+                        (list 'if sym result sym))))
+              (first reversed)
+              (rest reversed)))
+    true))
+
+(defmacro or [& forms]
+  (let [reversed (reverse forms)]
+    (reduce (fn [result form]
+              (let [sym (gensym)]
+                (list 'let [sym form]
+                      (list 'if sym sym result))))
+            (first reversed)
+            (rest reversed))))
+
+(defmacro letfn [bindings & body]
+  (list* 'let
+         (mapcat (fn [name] (list name :undefined))
+                 (map first bindings))
+         (concat (map (fn [binding]
+                        (when-not (= (count binding) 3)
+                          (error "malformed letfn binding"))
+                        (let [name (nth binding 0)
+                              args (nth binding 1)
+                              body (nth binding 2)]
+                          (list 'set! name (list 'fn name args body))))
+                      bindings)
+                 body)))
+
+(defn remove [pred coll]
+  (reduce (fn [result x]
+            (if (not (pred x))
+              (conj result x)
+              result))
+          []
+          coll))
+
+(defn filter [pred coll]
+  (reduce (fn [result x]
+            (if (pred x)
+              (conj result x)
+              result))
+          []
+          coll))
+
+(defn partial [f & args]
+  (fn [& more]
+    (apply f (concat args more))))
+
+(defn comp [& fs]
+  (reduce (fn [result f]
+            (fn [& args]
+              (result (apply f args))))
+          identity
+          fs))
+
+(defn juxt [& fs]
+  (fn [& args]
+    (reduce (fn [result f]
+              (conj result (apply f args)))
+            []
+            fs)))
+
+(defn constantly [x]
+  (fn [& args]
+    x))
+
+(defn complement [f]
+  (comp not f))
+
+(defn fnil [f x]
+  (fn [& args]
+    (if (and (seq args)
+             (nil? (first args)))
+      (apply f (cons x (rest args)))
+      (apply f args))))
+
+(defn group-by [f coll]
+  (reduce (fn [result x]
+            (let [k (f x)]
+              (update-in result [k] (fnil conj []) x)))
+          {}
+          coll))
+
+(defn every? [pred coll]
+  (cond (empty? coll) true
+        (not (pred (first coll))) false
+        :else (every? pred (rest coll))))
+
+(def not-every? (comp not every?))
+
+(defn some [pred coll]
+  (when (seq coll)
+    (let [x (first coll)]
+      (if (pred x)
+        x
+        (some pred (rest coll))))))
+
+(def not-any? (comp not some))
+
+(defn take-while [pred coll]
+  (let [recur (fn recur [coll acc]
+                (if (seq coll)
+                  (let [x (first coll)]
+                    (if (pred x)
+                      (recur (rest coll) (conj acc x))
+                      acc))
+                  acc))]
+    (recur coll [])))
+
+(defn drop-while [pred coll]
+  (let [recur (fn recur [coll]
+                (if (and (seq coll)
+                         (pred (first coll)))
+                  (recur (rest coll))
+                  coll))]
+    (recur coll)))
+
+(defn split-with [pred coll]
+  ((juxt (partial take-while pred)
+         (partial drop-while pred))
+   coll))
+
+(defn map-indexed [f coll]
+  (let [recur (fn recur [i coll acc]
+                (if (seq coll)
+                  (recur (inc i)
+                         (rest coll)
+                         (conj acc (f i (first coll))))
+                  acc))]
+    (recur 0 coll [])))
+
+(defn reductions [f val coll]
+  (let [recur (fn recur [val coll acc]
+                (if (seq coll)
+                  (let [x (f val (first coll))]
+                    (recur x (rest coll) (conj acc x)))
+                  acc))]
+    (recur val coll [val])))
