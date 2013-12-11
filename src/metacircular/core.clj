@@ -140,17 +140,6 @@
               vars
               '[apply invokable? error]))))
 
-(defn make-simple-env
-  "Create and return a new simple environment."
-  ([] (make-simple-env primitives))
-  ([vars]
-     (env/make-simple-env
-      (reduce (fn [result sym]
-                (let [f @(ns-resolve 'metacircular.core sym)]
-                  (assoc result sym f)))
-              vars
-              '[apply invokable? error]))))
-
 (defn push-bindings [env bindings]
   (reduce (fn [env [sym e]]
             (env/bind env sym (exec e env)))
@@ -204,8 +193,8 @@
   ([node env]
      (case (:op node)
        const (:form node)
-       var (env/lookup env (:form node))
-       local (env/lookup env (:form node))
+       var (env/find-var env (:form node))
+       local (env/find-local env (:form node))
        quote (:expr node)
        if (let [{:keys [test then else]} node]
             (if (exec test env)
