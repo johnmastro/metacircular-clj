@@ -29,14 +29,14 @@
            '((fn [n m] (+ n m)) 1 2)             3
            '((fn [n & more] (count more)) 1 2 3) 2
            )
-      (is (closure? (eval '(let [foo nil] ((fn foo [] foo)))))))
-    (testing "def"
-      (are [form] (= (eval form) (clj/eval form))
-           '(do (def one 1)
-                one)
-           '(do (def one 1)
-                (def one :one)
-                one)))
+      (is (procedure? (eval '(let [foo nil] ((fn foo [] foo)))))))
+    ;; (testing "def"
+    ;;   (are [form] (= (eval form) (clj/eval form))
+    ;;        '(do (def one 1)
+    ;;             one)
+    ;;        '(do (def one 1)
+    ;;             (def one :one)
+    ;;             one)))
     (testing "set!"
       (are [form x] (= (eval form) x)
            '(let [n 1] (set! n 2) n)              2

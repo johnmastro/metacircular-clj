@@ -1,10 +1,5 @@
 ;; -*- mode: clojure -*-
 
-(def defmacro
-  (macro [name args & body]
-    (list 'def name
-          (list* 'macro name args body))))
-
 (defmacro do [& forms]
   (list (list* 'fn [] forms)))
 

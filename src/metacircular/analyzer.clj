@@ -1,14 +1,16 @@
 (ns metacircular.analyzer)
 
 (def special-operators
-  '#{def fn if macro set!})
+  '#{def defmacro fn if quote set!})
 
 (defn special-operator? [x]
   (contains? special-operators x))
 
 (defn special-form? [form]
-  (and (seq? form)
-       (contains? special-operators (first form))))
+  (boolean
+   (and (seq? form)
+        (when-first [op form]
+          (special-operator? op)))))
 
 (defn constant? [x]
   (or (nil? x)
@@ -23,23 +25,28 @@
       (instance? clojure.lang.IRecord x)))
 
 (defmulti parse
-  (fn [[op & more]] op))
+  (fn [[op & more] env] op))
+
+(declare analyze analyze-in)
 
 (defmethod parse 'if
-  [[op test then else :as form]]
+  [[op test then else :as form] env]
   {:pre [(= (count form) 4)]}
-  {:op 'if
-   :form form
-   :test test
-   :then then
-   :else else})
+  (let [env (assoc env :context :expr)]
+    {:op 'if
+     :form form
+     :env env
+     :test (analyze test env)
+     :then (analyze then env)
+     :else (analyze else env)}))
 
-(defn valid-definition?
+(defn valid-fn-form?
   [form]
   (let [[name arg-list] (if (symbol? (nth form 1))
                           [(nth form 1) (nth form 2)]
                           [nil (nth form 1)])]
-    (and (vector? arg-list)
+    (and (= (first form) 'fn)
+         (vector? arg-list)
          (every? symbol? arg-list))))
 
 (defn parse-arg-list
@@ -56,83 +63,168 @@
      :max-args (if variadic Integer/MAX_VALUE n-pos)}))
 
 (defn parse-definition
-  [form]
-  (let [[name arg-list body] (if (symbol? (nth form 1)) ; named
-                               [(nth form 1) (nth form 2) (drop 3 form)]
-                               [nil (nth form 1) (drop 2 form)])
+  [form env]
+  (let [name (let [maybe-name (second form)]
+               (when (symbol? maybe-name)
+                 maybe-name))
+        [arg-list & body] (if name
+                            (nnext form)
+                            (next form))
         arg-spec (parse-arg-list arg-list)]
-    (merge
-     {:name name
-      :form form
-      :arg-list arg-list
-      :arg-spec arg-spec
-      :body body})))
+    {:name name
+     :form form
+     :arg-list arg-list
+     :arg-spec arg-spec
+     :body (let [syms (let [arg-syms (remove '#{&} arg-list)]
+                        (if name
+                          (conj arg-syms name)
+                          arg-syms))
+                 env (-> env
+                         (assoc :context :expr)
+                         (update-in [:locals] (fnil into #{}) syms))]
+             (mapv #(analyze % env) body))}))
 
 (defmethod parse 'fn
-  [[op & more :as form]]
-  {:pre [(valid-definition? form)]}
-  (assoc (parse-definition form) :op 'fn))
+  [[op & more :as form] env]
+  {:pre [(valid-fn-form? form)]}
+  (let [env (assoc env :context :expr)]
+    (merge
+     {:op 'fn
+      :env env}
+     (parse-definition form env))))
 
-(defmethod parse 'macro
-  [[op & more :as form]]
-  {:pre [(valid-definition? form)]}
-  (assoc (parse-definition form) :op 'macro))
+(defmethod parse 'defmacro
+  [[op target arg-list & body :as form] env]
+  {:pre [(symbol? target)
+         (vector? arg-list)
+         (every? symbol? arg-list)
+         (= (:context env) :toplevel)]}
+  (let [env (assoc env :context :expr)]
+    (merge
+     {:op 'defmacro
+      :form form
+      :env env
+      :target target}
+     (parse-definition form env))))
 
 (defmethod parse 'def
-  [[op target expr :as form]]
-  {:pre [(symbol? target) (= (count form) 3)]}
-  {:op 'def
-   :form form
-   :target target
-   :expr expr})
+  [[op target expr :as form] env]
+  {:pre [(symbol? target)
+         (= (count form) 3)
+         (= (:context env) :toplevel)]}
+  (let [env (assoc env :context :expr)]
+    {:op 'def
+     :form form
+     :env env
+     :target target
+     :expr (analyze expr env)}))
 
 (defmethod parse 'set!
-  [[op target expr :as form]]
-  {:pre [(symbol? target) (= (count form) 3)]}
-  {:op 'set!
-   :form form
-   :target target
-   :expr expr})
+  [[op target expr :as form] env]
+  {:pre [(symbol? target)
+         (= (count form) 3)
+         (contains? (:locals env) target)]}
+  (let [env (assoc env :context :expr)]
+    {:op 'set!
+     :form form
+     :env env
+     :target target
+     :expr (analyze expr env)}))
 
 (defmethod parse 'quote
-  [[op expr & _ :as form]]
-  {:op 'quote
-   :form form
-   :expr expr})
+  [[op expr & _ :as form] env]
+  (let [env (assoc env :context :expr)]
+    {:op 'quote
+     :form form
+     :env env
+     :expr expr}))
 
 (defmethod parse :default
-  [[op & args :as form]]
-  {:op 'invoke
-   :form form
-   :fn op
-   :args args})
+  [[op & args :as form] env]
+  (let [env (assoc env :context :expr)]
+    {:op 'invoke
+     :form form
+     :env env
+     :fn (analyze op env)
+     :args (mapv (analyze-in env) args)}))
 
-(defn analyze-const [form]
-  {:op 'const
-   :form form})
+(defn analyze-const [form env]
+  (let [env (assoc env :context :expr)]
+    {:op 'const
+     :form form
+     :env env}))
 
-(defn analyze-vector [form]
-  {:op 'vector
-   :form form})
+(defn analyze-vector [form env]
+  (let [env (assoc env :context :expr)]
+    {:op 'vector
+     :form form
+     :env env
+     :items (mapv (analyze-in env) form)}))
 
-(defn analyze-map [form]
-  {:op 'map
-   :form form})
+(defn analyze-map [form env]
+  (let [env (assoc env :context :expr)]
+    {:op 'map
+     :form form
+     :env env
+     :keys (mapv (analyze-in env) (keys form))
+     :vals (mapv (analyze-in env) (vals form))}))
 
-(defn analyze-set [form]
-  {:op 'set
-   :form form})
+(defn analyze-set [form env]
+  (let [env (assoc env :context :expr)]
+    {:op 'set
+     :form form
+     :env env
+     :items (mapv (analyze-in env) form)}))
 
-(defn analyze-symbol [form]
-  {:op 'symbol
-   :form form})
+(defn resolves-to [sym env]
+  (cond (contains? (:locals env) sym) 'local
+        (contains? (:vars env) sym) 'var
+        :else (throw (Exception. (str "Unable to resolve symbol: " sym)))))
 
-(defn analyze [form]
-  (let [invoke? #(and (seq? %) (seq %))]
-    (cond (symbol? form)    (analyze-symbol form)
-          (constant? form)  (analyze-const form)
-          (vector? form)    (analyze-vector form)
-          (map? form)       (analyze-map form)
-          (set? form)       (analyze-set form)
-          (invoke? form)    (parse form)
+(defn analyze-symbol [form env]
+  (let [env (assoc env :context :expr)]
+    (merge
+     {:op (resolves-to form env)
+      :form form
+      :env env})))
+
+(defn empty-env [& opts]
+  (merge
+   {:vars #{}
+    :locals #{}
+    :context :toplevel}
+   opts))
+
+(defn analyze-in [env]
+  (fn [form] (analyze form env)))
+
+(defn analyze
+  [form {:keys [vars locals context expand] :as env}]
+  (letfn [(call? [form]
+            (and (seq? form) (seq form)))
+          (var? [form]
+            (and (symbol? form)
+                 (not (special-operator? form))
+                 (= (resolves-to form env) 'var)))]
+    (cond (symbol? form)   (analyze-symbol form env)
+          (constant? form) (analyze-const form env)
+          (vector? form)   (analyze-vector form env)
+          (map? form)      (analyze-map form env)
+          (set? form)      (analyze-set form env)
+          (call? form)     (let [[op & args] (seq form)]
+                             (if (var? op)
+                               (let [exp (expand form)]
+                                 (if (identical? form exp)
+                                   (parse form env)
+                                   (recur exp env)))
+                               (parse form env)))
           :else (throw (Exception. (str "Unsupported form: " form))))))
+
+(defn show [m]
+  (reduce-kv (fn [result k v]
+               (assoc result
+                 k (cond (= k :env) 'ELIDED
+                         (map? v)   (show v)
+                         :else      v)))
+             {}
+             m))
