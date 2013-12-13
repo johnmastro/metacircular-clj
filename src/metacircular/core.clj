@@ -291,11 +291,11 @@
 
 (defn load-file
   "Read and evaluate all forms in file. Return the resulting env."
-  [file]
-  (let [env (make-env)]
-    (doseq [form (read-file file)]
-      (eval form env))
-    env))
+  ([file] (load-file file (make-env)))
+  ([file env]
+     (doseq [form (read-file file)]
+       (eval form env))
+     env))
 
 (def core-file
   (io/file (.getPath (io/resource "core.mclj"))))
