@@ -34,35 +34,35 @@
                      trim-newline triml trimr upper-case]}))
 
 (defn valid-args?
-  "Return true if a procedure with arg-spec can be applied to args."
-  [arg-spec args]
-  (let [{:keys [min-args max-args]} arg-spec]
+  "Return true if op can be applied to args."
+  [op args]
+  (let [{:keys [min-args max-args]} (.arg-spec op)]
     (<= min-args (count args) max-args)))
 
 (defn make-formals
   "Return a map of formals based on op and args."
   [op args]
-  (let [{:keys [positionals variadic] :as arg-spec} (.arg-spec op)]
-    (when-not (valid-args? arg-spec args)
-      (let [meta (meta op)
-            name (or (:name meta)
-                     (if (:macro? meta)
-                       "macro"
-                       "procedure"))]
-        (throw (Exception. (str "Wrong number of args for " name)))))
+  (when-not (valid-args? op args)
+    (let [meta (meta op)
+          name (or (:name meta)
+                   (if (:macro? meta)
+                     "macro"
+                     "procedure"))]
+      (throw (Exception. (str "Wrong number of args for " name)))))
+  (let [{:keys [positionals variadic]} (.arg-spec op)]
     (if variadic
       (let [[p-args v-args] (split-at (count positionals) args)]
         (-> (zipmap positionals p-args)
             (assoc variadic (seq v-args))))
       (zipmap positionals args))))
 
-(deftype Procedure [arg-spec body metadata env]
+(deftype Procedure [arg-spec body env metadata]
   clojure.lang.IObj
   (meta [_] metadata)
-  (withMeta [_ m] (Procedure. arg-spec body m env)))
+  (withMeta [_ m] (Procedure. arg-spec body env m)))
 
-(defn ->procedure [arg-spec body env]
-  (Procedure. arg-spec body {} env))
+(defn make-procedure [arg-spec body env]
+  (Procedure. arg-spec body env {}))
 
 (defmethod print-method Procedure [o ^Writer w]
   (.write w "#<")
@@ -78,47 +78,46 @@
 (defn -apply
   "Implementation of apply for Procedure."
   ;; Also inlined in exec to achieve tail call elimination
-  ([this args]
-     (let [formals (make-formals this args)
-           env (env/extend (.env this)
+  ([op args]
+     (let [formals (make-formals op args)
+           env (env/extend (.env op)
                  ;; TODO: Is there a better way to give the closure
                  ;; a reference to itself?
-                 (merge (when-let [name (-> this meta :name)]
-                          {name this})
+                 (merge (when-let [name (-> op meta :name)]
+                          {name op})
                         formals))]
-       (when-let [body (seq (.body this))]
+       (when-let [body (seq (.body op))]
          (doseq [e (butlast body)]
            (exec e env))
          (exec (last body) env))))
-  ([this a args] (-apply this (cons a args)))
-  ([this a b args] (-apply this (list* a b args)))
-  ([this a b c args] (-apply this (list* a b c args))))
+  ([op a args] (-apply op (cons a args)))
+  ([op a b args] (-apply op (list* a b args)))
+  ([op a b c args] (-apply op (list* a b c args))))
 
 (defn procedure?
-  "Return true is a procedure."
+  "Return true is a Procedure."
   [x]
   (instance? Procedure x))
 
 (defn apply
-  ([f args]
-     (cond
-      (ifn? f) (clj/apply f args)
-      (procedure? f) (-apply f args)
-      :else (throw (Exception. (str "Attempt to call non-procedure: " f)))))
-  ([f a args] (cons a args))
-  ([f a b args] (list* a b args))
-  ([f a b c args] (list* a b c args)))
+  ([op args]
+     (if (procedure? op)
+       (-apply op args)
+       (clj/apply op args)))
+  ([op a args] (cons a args))
+  ([op a b args] (list* a b args))
+  ([op a b c args] (list* a b c args)))
 
-(defn invokable? [x]
+(defn invokable?
+  "Return true if x is a Procedure or implements IFn."
+  [x]
   (or (ifn? x) (procedure? x)))
 
 (defn macro?
-  "Return true if x is a macro."
+  "Return true if x is a Procedure with :macro? metadata."
   [x]
   (and (instance? Procedure x)
        (boolean (-> x meta :macro?))))
-
-
 
 ;; -----------------------------------------------------------------------------
 ;; Evaluation
@@ -177,11 +176,13 @@
     :expand #(expand1 % env)}
    opts))
 
-(defn exec-in [env]
+(defn exec-in
+  "Return a function which will exec AST nodes in env."
+  [env]
   (fn [node] (exec node env)))
 
 (defn exec
-  "Execute node, an AST node produced by analyze."
+  "Execute node, an AST node produced by metacircular.analyzer/analyze."
   ([node]
      (exec node (make-env)))
   ([node env]
@@ -196,10 +197,10 @@
               (recur then env)
               (recur else env)))
        fn (let [{:keys [name arg-spec body]} node]
-            (with-meta (->procedure arg-spec body env)
+            (with-meta (make-procedure arg-spec body env)
               {:name name}))
        defmacro (let [{:keys [target name arg-spec body]} node
-                      val (with-meta (->procedure arg-spec body env)
+                      val (with-meta (make-procedure arg-spec body env)
                             {:name name
                              :macro? true})]
                   (env/def! env target val)
@@ -232,15 +233,16 @@
                       (clj/apply op (map (exec-in env) args))
 
                       :else
-                      (throw (Exception.
-                              (str "Not a valid procedure: " op)))))
+                      (throw (Exception. (str "Not a valid procedure: " op)))))
        vector (into [] (map (exec-in env) (:items node)))
        set (into #{} (map (exec-in env) (:items node)))
        map (zipmap (map (exec-in env) (:keys node))
                    (map (exec-in env) (:vals node)))
        (throw (Exception. (str "Can't exec " node))))))
 
-(defn eval-in [env]
+(defn eval-in
+  "Return a function which will eval forms in env."
+  [env]
   (fn [form] (eval form env)))
 
 (defn eval
@@ -261,16 +263,6 @@
      (doseq [expr# (butlast exprs#)]
        (eval expr# env#))
      (eval (last exprs#) env#)))
-
-(defmacro defenv
-  "Run body, saving the resulting env to a var named name."
-  [name & body]
-  `(def ~name
-     (let [result# (make-env)
-           exprs# '~body]
-       (doseq [expr# exprs#]
-         (eval expr# env#))
-       result#)))
 
 (defn read-all
   "Read all objects from rdr and return a seq."
@@ -306,7 +298,7 @@
 (defn repl
   ([] (repl (core-env)))
   ([env]
-     (let [exit? #{:exit :quit}
+     (let [exit? (comp boolean #{:exit :quit})
            forms (take-while (complement exit?) (repeatedly read))]
        (doseq [form forms]
          (prn (eval form env))))))
