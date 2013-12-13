@@ -24,6 +24,20 @@
       (instance? clojure.lang.IType x)
       (instance? clojure.lang.IRecord x)))
 
+(defn find-index [env sym]
+  (loop [frames (:locals env)]
+    (when (seq frames)
+      (let [frame (peek frames)]
+        (if (contains? frame sym)
+          (dec (count frames))
+          (recur (pop frames)))))))
+
+(defn has-local? [env sym]
+  (not (nil? (find-index env sym))))
+
+(defn has-var? [env sym]
+  (contains? (:vars env) sym))
+
 (defmulti parse
   (fn [[op & more] env] op))
 
@@ -81,7 +95,7 @@
                           arg-syms))
                  env (-> env
                          (assoc :context :expr)
-                         (update-in [:locals] (fnil into #{}) syms))]
+                         (update-in [:locals] conj (set syms)))]
              (mapv #(analyze % env) body))}))
 
 (defmethod parse 'fn
@@ -123,7 +137,7 @@
   [[op target expr :as form] env]
   {:pre [(symbol? target)
          (= (count form) 3)
-         (contains? (:locals env) target)]}
+         (has-local? env target)]}
   (let [env (assoc env :context :expr)]
     {:op 'set!
      :form form
@@ -176,23 +190,24 @@
      :env env
      :items (mapv (analyze-in env) form)}))
 
-(defn resolves-to [sym env]
-  (cond (contains? (:locals env) sym) 'local
-        (contains? (:vars env) sym) 'var
-        :else (throw (Exception. (str "Unable to resolve symbol: " sym)))))
-
 (defn analyze-symbol [form env]
-  (let [env (assoc env :context :expr)]
-    (merge
-     {:op (resolves-to form env)
-      :form form
-      :env env})))
+  (merge
+   {:form form
+    :env env}
+   (if-let [index (find-index env form)]
+     {:op 'local
+      :index index}
+     (if (contains? (:vars env) form)
+       {:op 'var}
+       (throw (Exception. (str "Unable to resolve symbol: " form)))))))
 
 (defn empty-env [& opts]
   (merge
-   {:vars #{}
-    :locals #{}
-    :context :toplevel}
+   {:vars {}
+    :locals []
+    :context :toplevel
+    :expand (fn [& args]
+              (throw (Exception. "No macroexpansion function provided")))}
    opts))
 
 (defn analyze-in [env]
@@ -205,7 +220,8 @@
           (var? [form]
             (and (symbol? form)
                  (not (special-operator? form))
-                 (= (resolves-to form env) 'var)))]
+                 (not (has-local? env form))
+                 (has-var? env form)))]
     (cond (symbol? form)   (analyze-symbol form env)
           (constant? form) (analyze-const form env)
           (vector? form)   (analyze-vector form env)
