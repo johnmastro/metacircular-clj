@@ -140,12 +140,6 @@
               vars
               '[apply invokable? error]))))
 
-(defn push-bindings [env bindings]
-  (reduce (fn [env [sym e]]
-            (env/bind env sym (exec e env)))
-          env
-          (partition 2 bindings)))
-
 (declare eval)
 
 (defn expand1
@@ -178,7 +172,7 @@
 (defn analyzer-env [env & opts]
   (merge
    {:vars @(.vars env)
-    :locals #{}
+    :locals []
     :context :toplevel
     :expand #(expand1 % env)}
    opts))
@@ -194,7 +188,8 @@
      (case (:op node)
        const (:form node)
        var (env/find-var env (:form node))
-       local (env/find-local env (:form node))
+       local (let [{:keys [index form]} node]
+               (env/find-local env index form))
        quote (:expr node)
        if (let [{:keys [test then else]} node]
             (if (exec test env)
