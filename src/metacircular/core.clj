@@ -307,3 +307,11 @@
   the environment."
   ([] (deref +core-env+))
   ([_] (swap! +core-env+ (fn [& _] (load-file core-file)))))
+
+(defn repl
+  ([] (repl (core-env)))
+  ([env]
+     (let [exit? #{:exit :quit}
+           forms (take-while (complement exit?) (repeatedly read))]
+       (doseq [form forms]
+         (prn (eval form env))))))
