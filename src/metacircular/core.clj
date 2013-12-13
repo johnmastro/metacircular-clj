@@ -188,7 +188,7 @@
   ([node env]
      (case (:op node)
        const (:form node)
-       var (env/find-var env (:form node))
+       var (:obj node)
        local (let [{:keys [index form]} node]
                (env/find-local env index form))
        quote (:expr node)

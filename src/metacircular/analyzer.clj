@@ -197,8 +197,9 @@
    (if-let [index (find-index env form)]
      {:op 'local
       :index index}
-     (if (contains? (:vars env) form)
-       {:op 'var}
+     (if (has-var? env form)
+       {:op 'var
+        :obj (get (:vars env) form)}
        (throw (Exception. (str "Unable to resolve symbol: " form)))))))
 
 (defn empty-env [& opts]
