@@ -56,13 +56,14 @@
             (assoc variadic (seq v-args))))
       (zipmap positionals args))))
 
-(deftype Procedure [arg-spec body env metadata]
+(deftype Procedure [arg-spec statements return env metadata]
   clojure.lang.IObj
   (meta [_] metadata)
-  (withMeta [_ m] (Procedure. arg-spec body env m)))
+  (withMeta [_ m] (Procedure. arg-spec statements return env m)))
 
 (defn make-procedure [arg-spec body env]
-  (Procedure. arg-spec body env {}))
+  (let [{:keys [statements return]} body]
+    (Procedure. arg-spec statements return env {})))
 
 (defmethod print-method Procedure [o ^Writer w]
   (.write w "#<")
@@ -86,10 +87,9 @@
                  (merge (when-let [name (-> op meta :name)]
                           {name op})
                         formals))]
-       (when-let [body (seq (.body op))]
-         (doseq [e (butlast body)]
-           (exec e env))
-         (exec (last body) env))))
+       (doseq [e (.statements op)]
+         (exec e env))
+       (exec (.return op) env)))
   ([op a args] (-apply op (cons a args)))
   ([op a b args] (-apply op (list* a b args)))
   ([op a b c args] (-apply op (list* a b c args))))
@@ -221,10 +221,9 @@
                                   (merge (when-let [name (-> op meta :name)]
                                            {name op})
                                          formals))]
-                        (when-let [body (seq (.body op))]
-                          (doseq [e (butlast body)]
-                            (exec e env))
-                          (recur (last body) env)))
+                        (doseq [e (.statements op)]
+                          (exec e env))
+                        (recur (.return op) env))
 
                       (ifn? op)
                       (clj/apply op (map (exec-in env) args))

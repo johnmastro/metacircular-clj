@@ -24,7 +24,9 @@
       (instance? clojure.lang.IType x)
       (instance? clojure.lang.IRecord x)))
 
-(defn find-index [env sym]
+(defn find-index
+  "Return the index into the frames stack for the frame containing sym."
+  [env sym]
   (loop [frames (:locals env)]
     (when (seq frames)
       (let [frame (peek frames)]
@@ -39,7 +41,8 @@
   (contains? (:vars env) sym))
 
 (defmulti parse
-  (fn [[op & more] env] op))
+  "Parse a special form or invokation and return a map."
+  (fn [[op & args :as form] env] op))
 
 (declare analyze analyze-in)
 
@@ -56,9 +59,10 @@
 
 (defn valid-fn-form?
   [form]
-  (let [[name arg-list] (if (symbol? (nth form 1))
-                          [(nth form 1) (nth form 2)]
-                          [nil (nth form 1)])]
+  (let [[one two three] form
+        [name arg-list] (if (symbol? two)
+                          [two three]
+                          [nil two])]
     (and (= (first form) 'fn)
          (vector? arg-list)
          (every? symbol? arg-list))))
@@ -85,18 +89,20 @@
                             (nnext form)
                             (next form))
         arg-spec (parse-arg-list arg-list)]
-    {:name name
-     :form form
-     :arg-list arg-list
-     :arg-spec arg-spec
-     :body (let [syms (let [arg-syms (remove '#{&} arg-list)]
-                        (if name
-                          (conj arg-syms name)
-                          arg-syms))
-                 env (-> env
-                         (assoc :context :expr)
-                         (update-in [:locals] conj (set syms)))]
-             (mapv #(analyze % env) body))}))
+    (merge
+     {:name name
+      :form form
+      :arg-list arg-list
+      :arg-spec arg-spec}
+     (let [syms (let [arg-syms (remove '#{&} arg-list)]
+                  (if name
+                    (conj arg-syms name)
+                    arg-syms))
+           env (-> env
+                   (assoc :context :expr)
+                   (update-in [:locals] conj (set syms)))]
+       {:body {:statements (mapv (analyze-in env) (butlast body))
+               :return (analyze (last body) env)}}))))
 
 (defmethod parse 'fn
   [[op & more :as form] env]
@@ -214,7 +220,7 @@
   (fn [form] (analyze form env)))
 
 (defn analyze
-  [form {:keys [vars locals context expand] :as env}]
+  [form {:keys [expand] :as env}]
   (letfn [(call? [form]
             (and (seq? form) (seq form)))
           (var? [form]
