@@ -167,7 +167,7 @@
 
 (defn analyzer-env [env & opts]
   (merge
-   {:vars @(.vars env)
+   {:vars @(:vars env)
     :locals []
     :context :toplevel
     :expand #(expand1 % env)}
