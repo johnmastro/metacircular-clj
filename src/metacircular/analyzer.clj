@@ -191,16 +191,15 @@
      :items (mapv (analyze-in env) form)}))
 
 (defn analyze-symbol [form env]
-  (merge
-   {:form form
-    :env env}
-   (if-let [index (find-index env form)]
-     {:op 'local
-      :index index}
-     (if (has-var? env form)
-       {:op 'var
-        :obj (get (:vars env) form)}
-       (throw (Exception. (str "Unable to resolve symbol: " form)))))))
+  (let [env (assoc env :context :expr)
+        base {:form form :env env}
+        error #(throw (Exception. (str % ": " form)))]
+    (if-let [index (find-index env form)]
+      (assoc base :op 'local :index index)
+      (let [obj (get (:vars env) form ::not-found)]
+        (cond (= obj ::not-found) (error "Unable to resolve symbol")
+              (:macro? (meta obj)) (error "Can't take the value of a macro")
+              :else (assoc base :op 'var :obj obj))))))
 
 (defn empty-env [& opts]
   (merge

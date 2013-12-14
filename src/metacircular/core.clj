@@ -145,13 +145,10 @@
   "Expand expr once and return the result. "
   ([expr] (expand1 expr (make-env)))
   ([expr env]
-     (if (and (seq? expr)
-              (not (special-form? expr)))
-       (let [op (eval (first expr) env)]
-         (if (macro? op)
-           (apply op (rest expr))
-           expr))
-       expr)))
+     (let [[_ obj] (env/find env (first expr))]
+       (if (macro? obj)
+         (apply obj (rest expr))
+         expr))))
 
 (defn expand
   "Fully expand expr (by calling expand1 repeatedly) and return the result. "
