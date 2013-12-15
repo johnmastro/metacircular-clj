@@ -65,20 +65,18 @@
                           [nil two])]
     (and (= (first form) 'fn)
          (vector? arg-list)
-         (every? symbol? arg-list))))
+         (every? #(or (symbol? %) (vector? %)) arg-list))))
 
 (defn parse-arg-list
   [arg-list]
   (let [[pos more] (split-with (complement '#{&}) arg-list)
-        variadic (if-let [excess (nnext more)]
-                   (throw (Exception. (str "Unexpected args: " excess)))
-                   (when (seq more)
-                     (second more)))
+        variadic? (if-let [excess (nnext more)]
+                    (throw (Exception. (str "Unexpected args: " excess)))
+                    (boolean (seq more)))
         n-pos (count pos)]
-    {:positionals (vec pos)
-     :variadic variadic
+    {:variadic variadic?
      :min-args n-pos
-     :max-args (if variadic Integer/MAX_VALUE n-pos)}))
+     :max-args (if variadic? Integer/MAX_VALUE n-pos)}))
 
 (defn parse-definition
   [form env]
@@ -92,9 +90,8 @@
     (merge
      {:name name
       :form form
-      :arg-list arg-list
-      :arg-spec arg-spec}
-     (let [syms (let [arg-syms (remove '#{&} arg-list)]
+      :arg-spec (assoc arg-spec :arg-list arg-list)}
+     (let [syms (let [arg-syms (remove '#{& :as} (flatten arg-list))]
                   (if name
                     (conj arg-syms name)
                     arg-syms))

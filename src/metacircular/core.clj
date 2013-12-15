@@ -39,23 +39,6 @@
   (let [{:keys [min-args max-args]} (.arg-spec op)]
     (<= min-args (count args) max-args)))
 
-(defn make-formals
-  "Return a map of formals based on op and args."
-  [op args]
-  (when-not (valid-args? op args)
-    (let [meta (meta op)
-          name (or (:name meta)
-                   (if (:macro? meta)
-                     "macro"
-                     "procedure"))]
-      (throw (Exception. (str "Wrong number of args for " name)))))
-  (let [{:keys [positionals variadic]} (.arg-spec op)]
-    (if variadic
-      (let [[p-args v-args] (split-at (count positionals) args)]
-        (-> (zipmap positionals p-args)
-            (assoc variadic (seq v-args))))
-      (zipmap positionals args))))
-
 (deftype Procedure [arg-spec statements return env metadata]
   clojure.lang.IObj
   (meta [_] metadata)
@@ -74,19 +57,13 @@
     (.write w "[anonymous]"))
   (.write w ">"))
 
-(declare exec)
+(declare exec push-bindings!)
 
 (defn -apply
   "Implementation of apply for Procedure."
   ;; Also inlined in exec to achieve tail call elimination
   ([op args]
-     (let [formals (make-formals op args)
-           env (env/extend (.env op)
-                 ;; TODO: Is there a better way to give the closure
-                 ;; a reference to itself?
-                 (merge (when-let [name (-> op meta :name)]
-                          {name op})
-                        formals))]
+     (let [env (push-bindings! op args)]
        (doseq [e (.statements op)]
          (exec e env))
        (exec (.return op) env)))
@@ -178,6 +155,37 @@
   [env]
   (fn [node] (exec node env)))
 
+(defn push-bindings! [op vals]
+  (when-not (valid-args? op vals)
+    (let [meta (meta op)
+          name (or (:name meta)
+                   (if (:macro? meta)
+                     "macro"
+                     "procedure"))]
+      (throw (Exception. (str "Wrong number of args for " name)))))
+  (let [frame (if-let [name (-> op meta :name)]
+                (atom {name op})
+                (atom {}))
+        env (env/extend* (.env op) frame)
+        arg-list (-> op .arg-spec :arg-list)]
+    (letfn [(process-bind [b v]
+              (cond (symbol? b) (swap! frame assoc b v)
+                    (vector? b) (process-vec b v)
+                    :else
+                    (throw (Exception. (str "Unsupported binding form:" b)))))
+            (process-vec [bs vs]
+              (loop [bs bs, n 0, seen-rest? false]
+                (when-let [[b1 b2 & more] (seq bs)]
+                  (cond (= b1 '&) (do (process-bind b2 (nthnext vs n))
+                                      (recur more n true))
+                        (= b1 :as) (process-bind b2 vs)
+                        :else (if seen-rest?
+                                (throw (Exception. "Unsupported binding form"))
+                                (do (process-bind b1 (nth vs n nil))
+                                    (recur (next bs) (inc n) seen-rest?)))))))]
+      (process-bind arg-list vals)
+      env)))
+
 (defn exec
   "Execute node, an AST node produced by metacircular.analyzer/analyze."
   ([node]
@@ -216,11 +224,7 @@
                       (recur (apply op args) env)
 
                       (procedure? op)
-                      (let [formals (make-formals op (map (exec-in env) args))
-                            env (env/extend (.env op)
-                                  (merge (when-let [name (-> op meta :name)]
-                                           {name op})
-                                         formals))]
+                      (let [env (push-bindings! op (map (exec-in env) args))]
                         (doseq [e (.statements op)]
                           (exec e env))
                         (recur (.return op) env))

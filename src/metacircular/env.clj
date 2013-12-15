@@ -26,6 +26,10 @@
 (defn extend [env m]
   (update-in env [:locals] conj (atom m)))
 
+(defn extend* [env a]
+  {:pre [(instance? clojure.lang.Atom a)]}
+  (update-in env [:locals] conj a))
+
 (defn find-local
   ([env sym]
      (if-let [[_ obj] (search-frames (:locals env) sym)]
