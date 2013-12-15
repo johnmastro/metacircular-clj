@@ -1,5 +1,5 @@
 (ns metacircular.core-test
-  (:refer-clojure :exclude [eval apply load-file extend])
+  (:refer-clojure :exclude [eval apply load-file destructure])
   (:require [clojure.core :as clj]
             [clojure.test :refer :all]
             [metacircular.core :refer :all]))
@@ -138,6 +138,43 @@
             :default))))
 
 (deftest test-destructuring
+  (testing "arglist destructuring"
+    (are [form] (= (eval form) (clj/eval form))
+         '((fn [x & xs]
+             {:x x :xs xs})
+           1 2 3)
+
+         '((fn [[x & xs]]
+             {:x x :xs xs})
+           [1 2 3])
+
+         '((fn [[x & xs] & more]
+             {:x x :xs xs :more more})
+           [])
+
+         '((fn [[x & xs] & more]
+             {:x x :xs xs :more more})
+           [1 2] 3 4 5)
+
+         '((fn [& stuff]
+             (apply + stuff))
+           1 2 3)
+
+         '((fn [& {:keys [one two]}]
+             {:one one :two two})
+           :one 1 :two 2)
+
+         '((fn [& {:keys [one two] :or {two 2}}]
+             {:one one :two two})
+           :one 1)
+
+         '((fn [& {:keys [one two] :or {two 2} :as it}]
+             {:one one :two two :it it})
+           :one 1)
+
+         '((fn [[i x] {a :a} & more]
+             {:i i :x x :a a :more more})
+           [1 2] {:a "a"})))
   (testing "vector destucturing"
     (are [form] (= (eval form) (clj/eval form))
          '(let [[a b] [1 2]] (+ a b))
