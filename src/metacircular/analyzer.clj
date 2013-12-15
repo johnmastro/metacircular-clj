@@ -91,9 +91,9 @@
         arg-syms (let [ensure-seq (fn [o] (if (coll? o) (seq o) o))
                        seq-colls (partial walk/prewalk ensure-seq)]
                    (->> (seq-colls arg-list)
-                        (flatten)
-                        (filter symbol?)
-                        (remove '#{&})))]
+                     (flatten)
+                     (filter symbol?)
+                     (remove '#{&})))]
     (merge
      {:name name
       :form form
@@ -102,8 +102,8 @@
                   (conj arg-syms name)
                   arg-syms)
            env (-> env
-                   (assoc :context :expr)
-                   (update-in [:locals] conj (set syms)))]
+                 (assoc :context :expr)
+                 (update-in [:locals] conj (set syms)))]
        {:body {:statements (mapv (analyze-in env) (butlast body))
                :return (analyze (last body) env)}}))))
 

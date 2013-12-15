@@ -1,5 +1,5 @@
 (ns metacircular.core
-  (:refer-clojure :exclude [eval apply load-file])
+  (:refer-clojure :exclude [eval apply load-file destructure])
   (:require [clojure.core :as clj]
             [clojure.java.io :as io]
             [clojure.walk :as walk]
@@ -57,13 +57,13 @@
     (.write w "[anonymous]"))
   (.write w ">"))
 
-(declare exec push-bindings!)
+(declare exec push-bindings)
 
 (defn -apply
   "Implementation of apply for Procedure."
   ;; Also inlined in exec to achieve tail call elimination
   ([op args]
-     (let [env (push-bindings! op args)]
+     (let [env (push-bindings op args)]
        (doseq [e (.statements op)]
          (exec e env))
        (exec (.return op) env)))
@@ -157,54 +157,66 @@
   [env]
   (fn [node] (exec node env)))
 
-(defn push-bindings! [op vals]
-  (when-not (valid-args? op vals)
-    (let [meta (meta op)
-          name (or (:name meta)
-                   (if (:macro? meta)
-                     "macro"
-                     "procedure"))]
-      (throw (Exception. (str "Wrong number of args for " name)))))
-  (let [frame (if-let [name (-> op meta :name)]
-                (atom {name op})
-                (atom {}))
-        env (env/extend* (.env op) frame)
-        arg-list (-> op .arg-spec :arg-list)]
-    (letfn [(process-bind [b v]
-              (cond (symbol? b) (swap! frame assoc b v)
-                    (vector? b) (process-vec b v)
-                    (map? b) (process-map b v)
-                    :else
-                    (throw (Exception. (str "Unsupported binding form: " b)))))
-            (process-vec [bs vs]
-              (loop [bs bs, n 0, seen-rest? false]
-                (when-let [[b1 b2 & more] (seq bs)]
-                  (cond (= b1 '&) (do (process-bind b2 (nthnext vs n))
-                                      (recur more n true))
-                        (= b1 :as) (process-bind b2 vs)
-                        :else (if seen-rest?
-                                (throw (Exception. "Unsupported binding form"))
-                                (do (process-bind b1 (nth vs n nil))
-                                    (recur (next bs) (inc n) seen-rest?)))))))
-            (process-map [bs vs]
-              (let [vs (if (seq? vs)
-                         (clojure.lang.PersistentHashMap/create (seq vs))
-                         vs)
-                    defaults (:or bs)
-                    as-name (:as bs)
-                    keys-vec (:keys bs)]
-                (when as-name
-                  (process-bind as-name vs))
-                (doseq [key keys-vec]
+(defn destructure [target arg-list vals]
+  (letfn [(process-bind [result b v]
+            (cond
+             (symbol? b) (assoc result b v)
+             (vector? b) (process-vec result b v)
+             (map? b) (process-map result b v)
+             :else (throw (Exception. (str "Unsupported binding form: " b)))))
+          (process-vec [result bs vs]
+            (loop [result result, bs bs, n 0, seen-rest? false]
+              (if-let [[b1 b2 & more] (seq bs)]
+                (cond (= b1 '&) (recur (process-bind result b2 (nthnext vs n))
+                                       more
+                                       n
+                                       true)
+                      (= b1 :as) (process-bind result b2 vs)
+                      :else (if seen-rest?
+                              (throw (Exception. "Unsupported binding form"))
+                              (recur (process-bind result b1 (nth vs n nil))
+                                     (next bs)
+                                     (inc n)
+                                     seen-rest?)))
+                result)))
+          (process-map [result bs vs]
+            (let [vs (if (seq? vs)
+                       (clojure.lang.PersistentHashMap/create (seq vs))
+                       vs)
+                  defaults (:or bs)
+                  assoc-keys (fn [result keys]
+                               (reduce (fn [r k]
+                                         (let [d (get defaults k nil)]
+                                           (assoc r k (get vs (keyword k) d))))
+                                       result
+                                       keys))
+                  result (let [name (:as bs)
+                               keys (:keys bs)]
+                           (cond-> result
+                             name (assoc name vs)
+                             keys (assoc-keys keys)))]
+              (loop [result result
+                     bs (dissoc bs :as :or :keys)]
+                (if-let [[[key val] & more] (seq bs)]
                   (let [default (get defaults key nil)]
-                    (process-bind key (get vs (keyword key) default))))
-                (loop [bs (seq (dissoc bs :as :or :keys))]
-                  (when-let [[[key val] & more] bs]
-                    (let [default (get defaults key nil)]
-                      (process-bind key (get vs val default))
-                      (recur (next bs)))))))]
-      (process-bind arg-list vals)
-      env)))
+                    (recur (process-bind result key (get vs val default))
+                           more))
+                  result))))]
+    (process-bind target arg-list vals)))
+
+(defn push-bindings
+  "Return op's env extended with bindings for vals."
+  [op vals]
+  (let [meta (meta op)
+        name (:name meta)]
+    (if (valid-args? op vals)
+      (env/extend (.env op) (destructure (if name {name op} {})
+                                         (-> op .arg-spec :arg-list)
+                                         vals))
+      (let [desc (or name (if (:macro? meta)
+                            "macro"
+                            "procedure"))]
+        (throw (Exception. (str "Wrong number of args for " desc)))))))
 
 (defn exec
   "Execute node, an AST node produced by metacircular.analyzer/analyze."
@@ -213,10 +225,10 @@
   ([node env]
      (case (:op node)
        const (:form node)
+       quote (:expr node)
        var (:obj node)
        local (let [{:keys [index form]} node]
                (env/find-local env index form))
-       quote (:expr node)
        if (let [{:keys [test then else]} node]
             (if (exec test env)
               (recur then env)
@@ -244,7 +256,7 @@
                       (recur (apply op args) env)
 
                       (procedure? op)
-                      (let [env (push-bindings! op (map (exec-in env) args))]
+                      (let [env (push-bindings op (map (exec-in env) args))]
                         (doseq [e (.statements op)]
                           (exec e env))
                         (recur (.return op) env))
@@ -309,8 +321,8 @@
   ([form env]
      (let [a-env (analyzer-env env)]
        (-> form
-           (analyze a-env)
-           (exec env)))))
+         (analyze a-env)
+         (exec env)))))
 
 (defn eval
   "Evaluate form the return the result."
