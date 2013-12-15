@@ -1,4 +1,5 @@
-(ns metacircular.analyzer)
+(ns metacircular.analyzer
+  (:require [clojure.walk :as walk]))
 
 (def special-operators
   '#{def defmacro fn if quote set!})
@@ -65,7 +66,7 @@
                           [nil two])]
     (and (= (first form) 'fn)
          (vector? arg-list)
-         (every? #(or (symbol? %) (vector? %)) arg-list))))
+         (every? #(or (symbol? %) (vector? %) (map? %)) arg-list))))
 
 (defn parse-arg-list
   [arg-list]
@@ -86,15 +87,20 @@
         [arg-list & body] (if name
                             (nnext form)
                             (next form))
-        arg-spec (parse-arg-list arg-list)]
+        arg-spec (parse-arg-list arg-list)
+        arg-syms (let [ensure-seq (fn [o] (if (coll? o) (seq o) o))
+                       seq-colls (partial walk/prewalk ensure-seq)]
+                   (->> (seq-colls arg-list)
+                        (flatten)
+                        (filter symbol?)
+                        (remove '#{&})))]
     (merge
      {:name name
       :form form
       :arg-spec (assoc arg-spec :arg-list arg-list)}
-     (let [syms (let [arg-syms (remove '#{& :as} (flatten arg-list))]
-                  (if name
-                    (conj arg-syms name)
-                    arg-syms))
+     (let [syms (if name
+                  (conj arg-syms name)
+                  arg-syms)
            env (-> env
                    (assoc :context :expr)
                    (update-in [:locals] conj (set syms)))]

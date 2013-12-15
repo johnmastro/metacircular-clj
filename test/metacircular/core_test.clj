@@ -164,7 +164,29 @@
 
          '(if-let [[x & xs :as stuff] nil]
             {:x x :xs xs :stuff stuff}
-            :nope))))
+            :nope)))
+  (testing "map destucturing"
+    (are [form] (= (eval form) (clj/eval form))
+         '(let [{a :a b :b} {:a 1 :b 2}]
+            [a b])
+
+         '(let [{:keys [a b]} {:a 1 :b 2}]
+            [a b])
+
+         '(let [{:keys [a b] :or {b :two}} {:a 1}]
+            [a b])
+
+         '(let [{a :a :as m} {:a 1 :b 2}]
+            [a m])
+
+         '(let [[_ & {:keys [a b]}] [:ignored :a 1 :b 2]]
+            [a b])
+
+         '(let [{a :a :keys [b]} {}]
+            [a b])
+
+         '(let [{:keys [a b]} '(:a 1 :b 2)]
+            [a b]))))
 
 (deftest test-recursion
   (testing "mutal recursion"

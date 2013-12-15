@@ -173,8 +173,9 @@
     (letfn [(process-bind [b v]
               (cond (symbol? b) (swap! frame assoc b v)
                     (vector? b) (process-vec b v)
+                    (map? b) (process-map b v)
                     :else
-                    (throw (Exception. (str "Unsupported binding form:" b)))))
+                    (throw (Exception. (str "Unsupported binding form: " b)))))
             (process-vec [bs vs]
               (loop [bs bs, n 0, seen-rest? false]
                 (when-let [[b1 b2 & more] (seq bs)]
@@ -184,7 +185,24 @@
                         :else (if seen-rest?
                                 (throw (Exception. "Unsupported binding form"))
                                 (do (process-bind b1 (nth vs n nil))
-                                    (recur (next bs) (inc n) seen-rest?)))))))]
+                                    (recur (next bs) (inc n) seen-rest?)))))))
+            (process-map [bs vs]
+              (let [vs (if (seq? vs)
+                         (clojure.lang.PersistentHashMap/create (seq vs))
+                         vs)
+                    defaults (:or bs)
+                    as-name (:as bs)
+                    keys-vec (:keys bs)]
+                (when as-name
+                  (process-bind as-name vs))
+                (doseq [key keys-vec]
+                  (let [default (get defaults key nil)]
+                    (process-bind key (get vs (keyword key) default))))
+                (loop [bs (seq (dissoc bs :as :or :keys))]
+                  (when-let [[[key val] & more] bs]
+                    (let [default (get defaults key nil)]
+                      (process-bind key (get vs val default))
+                      (recur (next bs)))))))]
       (process-bind arg-list vals)
       env)))
 
