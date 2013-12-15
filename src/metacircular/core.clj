@@ -116,11 +116,13 @@
               vars
               '[apply invokable? error]))))
 
+(def default-env (atom (make-env)))
+
 (declare eval)
 
 (defn expand1
   "Expand expr once and return the result. "
-  ([expr] (expand1 expr (make-env)))
+  ([expr] (expand1 expr (env/copy @default-env)))
   ([expr env]
      (let [[_ obj] (env/find env (first expr))]
        (if (macro? obj)
@@ -129,7 +131,7 @@
 
 (defn expand
   "Fully expand expr (by calling expand1 repeatedly) and return the result. "
-  ([expr] (expand expr (make-env)))
+  ([expr] (expand expr (env/copy @default-env)))
   ([expr env]
      (let [expanded (expand1 expr env)]
        (if (identical? expanded expr)
@@ -138,7 +140,7 @@
 
 (defn expand-all
   "Recursively perform all possible macroexpansions in form."
-  ([form] (expand-all form (make-env)))
+  ([form] (expand-all form (env/copy @default-env)))
   ([form env] (walk/prewalk (fn [x] (if (seq? x) (expand x env) x))
                             form)))
 
@@ -189,7 +191,7 @@
 (defn exec
   "Execute node, an AST node produced by metacircular.analyzer/analyze."
   ([node]
-     (exec node (make-env)))
+     (exec node (env/copy @default-env)))
   ([node env]
      (case (:op node)
        const (:form node)
@@ -240,25 +242,11 @@
                    (map (exec-in env) (:vals node)))
        (throw (Exception. (str "Can't exec " node))))))
 
-(defn eval-in
-  "Return a function which will eval forms in env."
-  [env]
-  (fn [form] (eval form env)))
-
-(defn eval
-  "Evaluate form the return the result."
-  ([form] (eval form (make-env)))
-  ([form env]
-     (let [a-env (analyzer-env env)]
-       (-> form
-           (analyze a-env)
-           (exec env)))))
-
 (defmacro run
   "Evaluate each expression in body and return the last expression's result.
   This is equivalent to wrapping exprs in a do form and using eval."
   [& body]
-  `(let [env# (make-env)
+  `(let [env# (env/copy @default-env)
          exprs# '~body]
      (doseq [expr# (butlast exprs#)]
        (eval expr# env#))
@@ -278,25 +266,49 @@
 
 (defn load-file
   "Read and evaluate all forms in file. Return the resulting env."
-  ([file] (load-file file (make-env)))
+  ([file] (load-file file (env/copy @default-env)))
   ([file env]
      (doseq [form (read-file file)]
        (eval form env))
      env))
 
-(def core-file
-  (io/file (.getPath (io/resource "core.mclj"))))
+(def core-env (atom nil))
 
-(def +core-env+ (atom (load-file core-file)))
+(defn load-core-env []
+  (let [core-file (io/file (.getPath (io/resource "core.mclj")))]
+    (load-file core-file)))
 
-(defn core-env
-  "Return the \"core\" environment. With an argument (any argument), reload
-  the environment."
-  ([] (deref +core-env+))
-  ([_] (swap! +core-env+ (fn [& _] (load-file core-file)))))
+(defn load-core-env!
+  ([] (load-core-env! nil))
+  ([reload] (when (or (not @core-env)
+                      reload)
+              (let [env (load-core-env)]
+                (reset! core-env env)
+                (reset! default-env env)))))
+
+(defn -eval
+  ([form] (-eval form (env/copy @default-env)))
+  ([form env]
+     (let [a-env (analyzer-env env)]
+       (-> form
+           (analyze a-env)
+           (exec env)))))
+
+(defn eval
+  "Evaluate form the return the result."
+  ([form]
+     (load-core-env!)
+     (eval form (env/copy @default-env)))
+  ([form env]
+     (-eval form env)))
+
+(defn eval-in
+  "Return a function which will eval forms in env."
+  [env]
+  (fn [form] (eval form env)))
 
 (defn repl
-  ([] (repl (core-env)))
+  ([] (repl (env/copy @default-env)))
   ([env]
      (let [exit? (comp boolean #{:exit :quit})
            forms (take-while (complement exit?) (repeatedly read))]
