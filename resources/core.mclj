@@ -49,28 +49,23 @@
           (cons 'do body)
           (reverse (partition-all 2 bindings))))
 
-(defmacro let* [bindings & body]
-  (when-not (even? (count bindings))
-    (error "let* requires an even number of forms in binding vector"))
-  (cons (list* 'fn (vec (take-nth 2 bindings))
-               body)
-        (take-nth 2 (rest bindings))))
-
 (defmacro when-let [binding & body]
   (when-not (= (count binding) 2)
     (error "when-let requires exactly two forms in binding vector"))
-  (let [name (first binding)
+  (let [gen (gensym)
+        binds (first binding)
         expr (second binding)]
-    (list 'let [name expr]
-          (list* 'when name body))))
+    (list 'let [gen expr, binds gen]
+          (list* 'when gen body))))
 
 (defmacro if-let [binding then else]
   (when-not (= (count binding) 2)
     (error "if-let requires exactly two forms in binding vector"))
-  (let [name (first binding)
+  (let [gen (gensym)
+        binds (first binding)
         expr (second binding)]
-    (list 'let [name expr]
-          (list 'if name then else))))
+    (list 'let [gen expr, binds gen]
+          (list 'if gen then else))))
 
 (defmacro cond [& clauses]
   (reduce (fn [result clause]
