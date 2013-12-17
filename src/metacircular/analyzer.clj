@@ -65,19 +65,71 @@
                           [two three]
                           [nil two])]
     (and (= (first form) 'fn)
-         (vector? arg-list)
-         (every? #(or (symbol? %) (vector? %) (map? %)) arg-list))))
+         (vector? arg-list))))
 
-(defn parse-arg-list
-  [arg-list]
-  (let [[pos more] (split-with (complement '#{&}) arg-list)
-        variadic? (if-let [excess (nnext more)]
-                    (throw (Exception. (str "Unexpected args: " excess)))
-                    (boolean (seq more)))
-        n-pos (count pos)]
-    {:variadic variadic?
-     :min-args n-pos
-     :max-args (if variadic? Integer/MAX_VALUE n-pos)}))
+(defn analyze-arg-list [arg-list]
+  (letfn [(error [form]
+            (throw (Exception. (str "Unsupported binding form: " form))))
+          (analyze-bind [form]
+            (cond (symbol? form) (analyze-sym form)
+                  (vector? form) (analyze-vec form)
+                  (map? form) (analyze-map form)
+                  :else (error form)))
+          (analyze-sym [form]
+            {:type 'symbol :form form})
+          (analyze-vec [form]
+            (let [[pos more] (split-with (complement '#{& :as}) form)
+                  analyze-more
+                  (fn analyze-more [more]
+                    (let [keys (take-nth 2 more)
+                          vals (take-nth 2 (next more))]
+                      (if (and (contains? #{0 2 4} (count more))
+                               (every? '#{& :as} keys))
+                        (zipmap (replace '{& :rest, :as :name} keys)
+                                (map analyze-bind vals))
+                        (error more))))]
+              (merge
+               {:type 'vector
+                :form form
+                :items (map analyze-bind pos)}
+               (analyze-more more))))
+          (analyze-map [form]
+            (let [{keys :keys defaults :or} form
+                  mappings (into (dissoc form :or :as :keys)
+                                 (zipmap keys (map keyword keys)))
+                  make-tuple (fn [[sym key]]
+                               [(analyze-bind sym)
+                                key
+                                (get defaults sym nil)])]
+              {:type 'map
+               :form form
+               :items (map make-tuple mappings)
+               :name (:as form)}))]
+    (let [n-pos (count (take-while (complement '#{&}) arg-list))
+          variadic? (boolean (some '#{&} arg-list))]
+      (if (some #{:as} arg-list)
+         ;; Clojure doesn't allow :as at the top level of arglists
+        (error ":as")
+        {:arg-list (analyze-bind arg-list)
+         :variadic variadic?
+         :min-args n-pos
+         :max-args (if variadic? Integer/MAX_VALUE n-pos)}))))
+
+(defn find-arg-syms [arg-list]
+  (let [walk (fn walk [arg-list]
+               (walk/prewalk (fn [x]
+                               (if (coll? x)
+                                 (seq (if (and (map? x)
+                                               (contains? x :or))
+                                        (update-in x [:or] keys)
+                                        x))
+                                 x))
+                             arg-list))]
+    (->> (walk arg-list)
+      (flatten)
+      (filter symbol?)
+      (remove '#{&})
+      (set))))
 
 (defn parse-definition
   [form env]
@@ -87,23 +139,17 @@
         [arg-list & body] (if name
                             (nnext form)
                             (next form))
-        arg-spec (parse-arg-list arg-list)
-        arg-syms (let [ensure-seq (fn [o] (if (coll? o) (seq o) o))
-                       seq-colls (partial walk/prewalk ensure-seq)]
-                   (->> (seq-colls arg-list)
-                     (flatten)
-                     (filter symbol?)
-                     (remove '#{&})))]
+        arg-syms (find-arg-syms arg-list)]
     (merge
      {:name name
       :form form
-      :arg-spec (assoc arg-spec :arg-list arg-list)}
+      :arg-spec (analyze-arg-list arg-list)}
      (let [syms (if name
                   (conj arg-syms name)
                   arg-syms)
            env (-> env
                  (assoc :context :expr)
-                 (update-in [:locals] conj (set syms)))]
+                 (update-in [:locals] conj syms))]
        {:body {:statements (mapv (analyze-in env) (butlast body))
                :return (analyze (last body) env)}}))))
 

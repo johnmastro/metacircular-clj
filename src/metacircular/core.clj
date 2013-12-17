@@ -4,7 +4,7 @@
             [clojure.java.io :as io]
             [clojure.walk :as walk]
             [metacircular.env :as env]
-            [metacircular.analyzer :refer [analyze special-form?]])
+            [metacircular.analyzer :refer [analyze analyze-arg-list]])
   (:import  (java.io Writer FileReader PushbackReader)))
 
 ;; -----------------------------------------------------------------------------
@@ -157,52 +157,43 @@
   [env]
   (fn [node] (exec node env)))
 
-(defn destructure [target arg-list vals]
-  (letfn [(process-bind [result b v]
-            (cond
-             (symbol? b) (assoc result b v)
-             (vector? b) (process-vec result b v)
-             (map? b) (process-map result b v)
-             :else (throw (Exception. (str "Unsupported binding form: " b)))))
-          (process-vec [result bs vs]
-            (loop [result result, bs bs, n 0, seen-rest? false]
-              (if-let [[b1 b2 & more] (seq bs)]
-                (cond (= b1 '&) (recur (process-bind result b2 (nthnext vs n))
-                                       more
-                                       n
-                                       true)
-                      (= b1 :as) (process-bind result b2 vs)
-                      :else (if seen-rest?
-                              (throw (Exception. "Unsupported binding form"))
-                              (recur (process-bind result b1 (nth vs n nil))
-                                     (next bs)
-                                     (inc n)
-                                     seen-rest?)))
-                result)))
-          (process-map [result bs vs]
-            (let [vs (if (seq? vs)
-                       (clojure.lang.PersistentHashMap/create (seq vs))
-                       vs)
-                  defaults (:or bs)
-                  assoc-keys (fn [result keys]
-                               (reduce (fn [r k]
-                                         (let [d (get defaults k nil)]
-                                           (assoc r k (get vs (keyword k) d))))
-                                       result
-                                       keys))
-                  result (let [name (:as bs)
-                               keys (:keys bs)]
-                           (cond-> result
-                             name (assoc name vs)
-                             keys (assoc-keys keys)))]
-              (loop [result result
-                     bs (dissoc bs :as :or :keys)]
-                (if-let [[[key val] & more] (seq bs)]
-                  (let [default (get defaults key nil)]
-                    (recur (process-bind result key (get vs val default))
-                           more))
-                  result))))]
-    (process-bind target arg-list vals)))
+(defn destructure
+  ([arg-list vals] (destructure {} arg-list vals))
+  ([target arg-list vals]
+     (letfn [(process-bind [result node v]
+               (case (:type node)
+                 symbol (assoc result (:form node) v)
+                 vector (process-vec result node v)
+                 map (process-map result node v)
+                 (throw (Exception. (str "Malformed binding node: " node)))))
+             (process-vec [result node vs]
+               (loop [result result, items (:items node), n 0]
+                 (if-let [[item & more] (seq items)]
+                   (recur (process-bind result item (nth vs n nil))
+                          more
+                          (inc n))
+                   (let [{:keys [rest name]} node]
+                     (cond-> result
+                       name (process-bind name vs)
+                       rest (process-bind rest (nthnext vs n)))))))
+             (process-map [result node vs]
+               (let [vs (if (seq? vs)
+                          (clojure.lang.PersistentHashMap/create (seq vs))
+                          vs)]
+                 (loop [result result, items (:items node)]
+                   (if-let [[item & more] (seq items)]
+                     (let [[sym key default] item]
+                       (recur (process-bind result sym (get vs key default))
+                              more))
+                     (if-let [name (:name node)]
+                       (assoc result name vs)
+                       result)))))]
+       (process-bind target arg-list vals))))
+
+(defn -destructure
+  ([arg-list vals] (-destructure {} arg-list vals))
+  ([target arg-list vals]
+     (destructure target (analyze-arg-list arg-list) vals)))
 
 (defn push-bindings
   "Return op's env extended with bindings for vals."
