@@ -10,6 +10,21 @@
             [metacircular.env :as e]
             [metacircular.analyzer :as a]))
 
+(alter-var-root #'*print-length* (constantly 10))
+(alter-var-root #'*print-level* (constantly 2))
+
+(defn set-printing!
+  ([] (set-printing! 'limit))
+  ([msg]
+     (case msg
+       limit (set-printing! 10 2)
+       relax (set-printing! nil nil)
+       (throw (Exception. (str "Unknown set-printing! message " msg)))))
+  ([length level]
+     (set! *print-length* length)
+     (set! *print-level* level)
+     [length level]))
+
 (defn run-tests
   ([] (run-tests 'metacircular.core-test))
   ([ns-sym] (test/run-tests ns-sym)))
