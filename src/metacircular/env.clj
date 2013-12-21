@@ -22,7 +22,8 @@
   (if-let [[frame _] (search-frames (:locals env) sym)]
     (do (swap! frame assoc sym val)
         env)
-    (throw (Exception. (str "Can't set an unbound variable: " sym)))))
+    (throw (ex-info (str "Can't set an unbound local: " sym)
+                    {:sym sym :val val :env env}))))
 
 (defn extend [env m]
   (update-in env [:locals] conj (atom m)))
@@ -31,20 +32,22 @@
   ([env sym]
      (if-let [[_ obj] (search-frames (:locals env) sym)]
        obj
-       (throw (Exception. (str "Unable to resolve symbol: " sym)))))
+       (throw (ex-info (str "Unable to resolve symbol: " sym)
+                       {:sym sym :env env}))))
   ([env n sym]
-     (if-let [frame (get (:locals env) n)]
-       (let [obj (get @frame sym ::not-found)]
-         (if (not= obj ::not-found)
-           obj
-           (throw (Exception. (str "Unable to resolve symbol: " sym)))))
-       (throw (Exception. (str "Invalid locals frame: " n))))))
+     (let [frame (nth (:locals env) n)
+           obj (get @frame sym ::not-found)]
+       (if (not= obj ::not-found)
+         obj
+         (throw (ex-info (str "Unable to resolve symbol: " sym)
+                         {:sym sym :env env}))))))
 
 (defn find-var [env sym]
   (let [result (get @(:vars env) sym ::not-found)]
     (if (not= result ::not-found)
       result
-      (throw (Exception. (str "Unable to resolve symbol: " sym))))))
+      (throw (ex-info (str "Unable to resolve symbol: " sym)
+                      {:sym sym :env env})))))
 
 (defn find [env sym]
   (if-let [[_ obj] (search-frames (:locals env) sym)]

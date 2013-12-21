@@ -61,7 +61,7 @@
                 desc (or name (if (:macro? f)
                                 "macro"
                                 "procedure"))]
-            (throw (Exception. (str "Wrong number of args for " desc)))))))))
+            (throw (ex-info "Wrong number of args" {:fn f :args args}))))))))
 
 (defn -apply
   "Implementation of apply for Procedure."
@@ -165,7 +165,8 @@
                  symbol (assoc result (:form node) v)
                  vector (process-vec result node v)
                  map (process-map result node v)
-                 (throw (Exception. (str "Malformed binding node: " node)))))
+                 (throw (ex-info "Malformed binding node"
+                                 {:node node :val v}))))
              (process-vec [result node vs]
                (loop [result result, items (:items node), n 0]
                  (if-let [[item & more] (seq items)]
@@ -248,12 +249,13 @@
                       (clj/apply op (map (exec-in env) args))
 
                       :else
-                      (throw (Exception. (str "Not a valid procedure: " op)))))
+                      (throw (ex-info "Not a valid procedure"
+                                      {:node node :env env}))))
        vector (into [] (map (exec-in env) (:items node)))
        set (into #{} (map (exec-in env) (:items node)))
        map (zipmap (map (exec-in env) (:keys node))
                    (map (exec-in env) (:vals node)))
-       (throw (Exception. (str "Can't exec " node))))))
+       (throw (ex-info "Invalid AST node" {:node node :env env})))))
 
 (defmacro run
   "Evaluate each expression in body and return the last expression's result.
@@ -293,11 +295,12 @@
 
 (defn load-core-env!
   ([] (load-core-env! nil))
-  ([reload] (when (or (not @core-env)
-                      reload)
-              (let [env (load-core-env)]
-                (reset! core-env env)
-                (reset! default-env env)))))
+  ([reload?]
+     (when (or (not @core-env)
+               reload?)
+       (let [env (load-core-env)]
+         (reset! core-env env)
+         (reset! default-env env)))))
 
 (defn -eval
   ([form] (-eval form (env/copy @default-env)))
@@ -308,12 +311,17 @@
          (exec env)))))
 
 (defn eval
-  "Evaluate form the return the result."
+  "Evaluate form and return the result."
   ([form]
      (load-core-env!)
      (eval form (env/copy @default-env)))
   ([form env]
-     (-eval form env)))
+     (try (-eval form env)
+          (catch Exception exc
+            (if (instance? clojure.lang.ExceptionInfo exc)
+              (throw exc)
+              (throw
+               (ex-info "Evaluation error" {:form form :env env :exc exc})))))))
 
 (defn eval-in
   "Return a function which will eval forms in env."

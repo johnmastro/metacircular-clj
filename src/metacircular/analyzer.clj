@@ -70,7 +70,7 @@
 
 (defn analyze-arg-list [arg-list]
   (letfn [(error [form]
-            (throw (Exception. (str "Unsupported binding form: " form))))
+            (throw (ex-info "Unsupported binding form" {:form form})))
           (analyze-bind [form]
             (cond (symbol? form) (analyze-sym form)
                   (vector? form) (analyze-vec form)
@@ -154,9 +154,8 @@
                             :variadic
                             (:positionals method))]
                 (if (contains? result arity)
-                  (throw (Exception.
-                          (str "Duplicate fn signature"
-                               (when name ": " name))))
+                  (throw (ex-info "Duplicate fn signature"
+                                  {:name name :arity arity :method method}))
                   (assoc result arity method))))
             {}
             (map parse-method sigs))))
@@ -173,9 +172,8 @@
                (if (and (seq? (first sigs))
                         (vector? (ffirst sigs)))
                  sigs
-                 (Exception.
-                  (str "Malformed definition"
-                       (when name ": " name)))))]
+                 (throw (ex-info "Malformed definition"
+                                 {:form form :name name :env env}))))]
     (let [method-table (parse-methods name sigs env)
           arities (-> method-table keys set)
           methods (vals method-table)
@@ -187,7 +185,8 @@
       (when (and variadic
                  max-fixed
                  (< (:positionals variadic) max-fixed))
-        (throw (Exception. "Fixed arity fn with more params than variadic fn")))
+        (throw (ex-info "Fixed arity fn with more params than variadic fn"
+                        {:form form :name name :env env})))
       {:name name
        :form form
        :arities arities
@@ -287,7 +286,7 @@
 (defn analyze-symbol [form env]
   (let [env (assoc env :context :expr)
         base {:form form :env env}
-        error #(throw (Exception. (str % ": " form)))]
+        error #(throw (ex-info % {:form form :env env}))]
     (if-let [index (find-index env form)]
       (assoc base :op 'local :index index)
       (let [obj (get (:vars env) form ::not-found)]
@@ -327,5 +326,5 @@
                                    (parse form env)
                                    (recur exp env)))
                                (parse form env)))
-          :else (throw (Exception. (str "Unsupported form: " form))))))
+          :else (throw (ex-info "Unsupported form" {:form form :env env})))))
 
