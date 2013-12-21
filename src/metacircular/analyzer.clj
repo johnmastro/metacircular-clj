@@ -49,7 +49,8 @@
 
 (defmethod parse 'if
   [[op test then else :as form] env]
-  {:pre [(= (count form) 4)]}
+  {:pre [(or (= (count form) 3)
+             (= (count form) 4))]}
   (let [env (assoc env :context :expr)]
     {:op 'if
      :form form

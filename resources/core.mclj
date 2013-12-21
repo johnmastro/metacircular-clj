@@ -7,8 +7,11 @@
   (list 'def name
         (list* 'fn name args body)))
 
-(defmacro if-not [test then else]
-  (list 'if (list 'not test) then else))
+(defmacro if-not
+  ([test then]
+     (list 'if-not test then nil))
+  ([test then else]
+     (list 'if (list 'not test) then else)))
 
 (defmacro when [test & body]
   (list 'if test
@@ -18,10 +21,15 @@
 (defmacro when-not [test & body]
   (list* 'when (list 'not test) body))
 
-(defn reduce [f val coll]
-  (if (seq coll)
-    (reduce f (f val (first coll)) (rest coll))
-    val))
+(defn reduce
+  ([f coll]
+     (if (seq coll)
+       (reduce f (first coll) (rest coll))
+       (f)))
+  ([f val coll]
+     (if (seq coll)
+       (reduce f (f val (first coll)) (rest coll))
+       val)))
 
 (defn fold-right [f val coll]
   (if (seq coll)
@@ -49,29 +57,30 @@
           (cons 'do body)
           (reverse (partition-all 2 bindings))))
 
-(defmacro when-let [binding & body]
-  (when-not (= (count binding) 2)
-    (error "when-let requires exactly two forms in binding vector"))
-  (let [gen (gensym)
-        binds (first binding)
-        expr (second binding)]
-    (list 'let [gen expr, binds gen]
-          (list* 'when gen body))))
+(defmacro when-let [bindings & body]
+  (when-not (= (count bindings) 2)
+    (error "when-let requires exactly two forms in bindings vector"))
+  (let [[binds expr] bindings
+        sym (gensym)]
+    (list 'let [sym expr, binds sym]
+          (list* 'when sym body))))
 
-(defmacro if-let [binding then else]
-  (when-not (= (count binding) 2)
-    (error "if-let requires exactly two forms in binding vector"))
-  (let [gen (gensym)
-        binds (first binding)
-        expr (second binding)]
-    (list 'let [gen expr, binds gen]
-          (list 'if gen then else))))
+(defmacro if-let
+  ([bindings then]
+     (list 'if-let bindings then nil))
+  ([bindings then else]
+     (when-not (= (count bindings) 2)
+       (error "if-let requires exactly two forms in bindings vector"))
+     (let [[binds expr] bindings
+           sym (gensym)]
+       (list 'let [sym expr, binds sym]
+             (list 'if sym then else)))))
 
 (defmacro cond [& clauses]
   (reduce (fn [result clause]
-            (if (= (count clause) 2)
-              (list 'if (first clause) (second clause) result)
-              (error "odd number of clauses to cond")))
+            (when-not (= (count clause) 2)
+              (error "odd number of clauses to cond"))
+            (list 'if (first clause) (second clause) result))
           nil
           (reverse (partition-all 2 clauses))))
 
@@ -96,36 +105,30 @@
                   default
                   clauses))))
 
-(defmacro and [& forms]
-  (if (seq forms)
-    (let [reversed (reverse forms)]
-      (reduce (fn [result form]
-                (let [sym (gensym)]
-                  (list 'let [sym form]
-                        (list 'if sym result sym))))
-              (first reversed)
-              (rest reversed)))
-    true))
+(defmacro or
+  ([] nil)
+  ([x] x)
+  ([x & more]
+     (let [sym (gensym)]
+       (list 'let [sym x]
+             (list 'if sym sym (cons 'or more))))))
 
-(defmacro or [& forms]
-  (let [reversed (reverse forms)]
-    (reduce (fn [result form]
-              (let [sym (gensym)]
-                (list 'let [sym form]
-                      (list 'if sym sym result))))
-            (first reversed)
-            (rest reversed))))
+(defmacro and
+  ([] true)
+  ([x] x)
+  ([x & more]
+     (let [sym (gensym)]
+       (list 'let [sym x]
+             (list 'if sym (cons 'and more) sym)))))
 
 (defmacro letfn [bindings & body]
   (list* 'let
          (mapcat (fn [name] (list name :undefined))
                  (map first bindings))
-         (concat (map (fn [binding]
-                        (when-not (= (count binding) 3)
+         (concat (map (fn [form]
+                        (when-not (= (count form) 3)
                           (error "malformed letfn binding"))
-                        (let [name (nth binding 0)
-                              args (nth binding 1)
-                              body (nth binding 2)]
+                        (let [[name args body] form]
                           (list 'set! name (list 'fn name args body))))
                       bindings)
                  body)))
@@ -193,21 +196,18 @@
 (def not-every? (comp not every?))
 
 (defn some [pred coll]
-  (when (seq coll)
-    (let [x (first coll)]
-      (if (pred x)
-        x
-        (some pred (rest coll))))))
+  (when-let [[x & xs] (seq coll)]
+    (if (pred x)
+      x
+      (some pred xs))))
 
 (def not-any? (comp not some))
 
 (defn take-while [pred coll]
   (let [recur (fn recur [coll acc]
-                (if (seq coll)
-                  (let [x (first coll)]
-                    (if (pred x)
-                      (recur (rest coll) (conj acc x))
-                      acc))
+                (if (and (seq coll)
+                         (pred (first coll)))
+                  (recur (rest coll) (conj acc (first coll)))
                   acc))]
     (recur coll [])))
 
@@ -226,17 +226,42 @@
 
 (defn map-indexed [f coll]
   (let [recur (fn recur [i coll acc]
-                (if (seq coll)
-                  (recur (inc i)
-                         (rest coll)
-                         (conj acc (f i (first coll))))
+                (if-let [[x & xs] (seq coll)]
+                  (recur (inc i) xs (conj acc (f i x)))
+                  acc))]
+    (recur 0 coll [])))
+
+(defn keep-indexed [f coll]
+  (let [recur (fn recur [i coll acc]
+                (if-let [[x & xs] (seq coll)]
+                  (let [r (f i x)]
+                    (if-not (nil? r)
+                      (recur (inc i) xs (conj acc r))
+                      (recur (inc i) xs acc)))
                   acc))]
     (recur 0 coll [])))
 
 (defn reductions [f val coll]
   (let [recur (fn recur [val coll acc]
-                (if (seq coll)
-                  (let [x (f val (first coll))]
-                    (recur x (rest coll) (conj acc x)))
+                (if-let [[x & xs] (seq coll)]
+                  (let [r (f val x)]
+                    (recur r xs (conj acc r)))
                   acc))]
     (recur val coll [val])))
+
+(defmacro ->
+  ([x] x)
+  ([x form]
+     (if (seq? form)
+       (list* (first form) x (next form))
+       (list form x)))
+  ([x form & more]
+     (list* '-> (list '-> x form) more)))
+
+(defmacro ->>
+  ([x form]
+     (if (seq? form)
+       (cons (first form) (concat (next form) (list x)))
+       (list form x)))
+  ([x form & more]
+     (list* '->> (list '->> x form) more)))
