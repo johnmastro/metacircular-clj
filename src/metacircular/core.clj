@@ -36,18 +36,25 @@
 (defn make-procedure
   [node env & {macro? :macro}]
   (let [name (:name node)
+        make-method #(with-meta (assoc %
+                                  :env env
+                                  :name name
+                                  :procedure (atom nil))
+                       {:type ::method})
         methods (reduce-kv (fn [result arity node]
-                             (let [m (with-meta (assoc node :env env :name name)
-                                       {:type ::method})]
-                               (assoc result arity m)))
+                             (assoc result arity (make-method node)))
                            {}
-                           (:methods node))]
-    (with-meta (merge (select-keys node [:name :arities])
-                      {:macro? macro?
-                       :methods methods})
-      {:type ::procedure})))
-
-(declare exec push-bindings)
+                           (:methods node))
+        procedure (with-meta (merge (select-keys node [:name :arities])
+                                    {:macro? macro?
+                                     :methods methods})
+                    {:type ::procedure})]
+    ;; This seems like a bit of a kludge but each method should have a link to
+    ;; the procedure it belongs to and I haven't come up with a better way to
+    ;; do that.
+    (doseq [entry (:methods procedure)]
+      (reset! (-> entry val :procedure) procedure))
+    procedure))
 
 (defn find-method [f args]
   (let [count (count args)]
@@ -61,14 +68,17 @@
                 desc (or name (if (:macro? f)
                                 "macro"
                                 "procedure"))]
-            (throw (ex-info "Wrong number of args" {:fn f :args args}))))))))
+            (throw (ex-info (str "Wrong number of args for " desc)
+                            {:procedure f :args args}))))))))
+
+(declare exec push-bindings)
 
 (defn -apply
   "Implementation of apply for Procedure."
   ;; Also inlined in exec to achieve tail call elimination
   ([op args]
      (let [method (find-method op args)
-           env (push-bindings op method args)]
+           env (push-bindings method args)]
        (doseq [e (:statements method)]
          (exec e env))
        (exec (:return method) env)))
@@ -197,10 +207,10 @@
 
 (defn push-bindings
   "Return op's env extended with bindings for vals."
-  [op method vals]
-  (let [name (:name op)]
+  [method vals]
+  (let [{:keys [procedure name]} method]
     (env/extend (:env method)
-      (destructure (if name {name op} {})
+      (destructure (if name {name @procedure} {})
                    (:arg-list method)
                    vals))))
 
@@ -240,7 +250,7 @@
                       (procedure? op)
                       (let [method (find-method op args)
                             args (map (exec-in env) args)
-                            env (push-bindings op method args)]
+                            env (push-bindings method args)]
                         (doseq [e (:statements method)]
                           (exec e env))
                         (recur (:return method) env))
