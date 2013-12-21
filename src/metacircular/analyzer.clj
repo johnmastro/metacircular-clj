@@ -60,12 +60,12 @@
 
 (defn valid-fn-form?
   [form]
-  (let [[one two three] form
-        [name arg-list] (if (symbol? two)
-                          [two three]
-                          [nil two])]
-    (and (= (first form) 'fn)
-         (vector? arg-list))))
+  (let [[op one two three] form]
+    (and (= op 'fn)
+         (or (vector? one)                                 ;; (fn [] ...)
+             (and (symbol? one) (vector? two))             ;; (fn name [] ...)
+             (and (seq? one) (vector? (first one)))        ;; (fn ([] ...))
+             (and (symbol? one) (vector? (first two))))))) ;; (fn name ([] ...))
 
 (defn analyze-arg-list [arg-list]
   (letfn [(error [form]
@@ -81,17 +81,24 @@
             (let [[pos more] (split-with (complement '#{& :as}) form)
                   analyze-more
                   (fn analyze-more [more]
-                    (let [keys (take-nth 2 more)
-                          vals (take-nth 2 (next more))]
-                      (if (and (contains? #{0 2 4} (count more))
-                               (every? '#{& :as} keys))
-                        (zipmap (replace '{& :rest, :as :name} keys)
-                                (map analyze-bind vals))
-                        (error more))))]
+                    (loop [result {} more more]
+                      (if-let [[a b & z] (seq more)]
+                        (case a
+                          & (if (:rest result)
+                              (error more)
+                              (recur (assoc result :rest (analyze-bind b))
+                                     z))
+                          :as (if (seq z)
+                                (error z)
+                                (assoc result :name (analyze-bind b)))
+                          (error more))
+                        result)))]
               (merge
                {:type 'vector
                 :form form
-                :items (map analyze-bind pos)}
+                :items (map analyze-bind pos)
+                :rest nil
+                :name nil}
                (analyze-more more))))
           (analyze-map [form]
             (let [{keys :keys defaults :or} form
@@ -105,15 +112,14 @@
                :form form
                :items (map make-tuple mappings)
                :name (:as form)}))]
-    (let [n-pos (count (take-while (complement '#{&}) arg-list))
-          variadic? (boolean (some '#{&} arg-list))]
-      (if (some #{:as} arg-list)
-         ;; Clojure doesn't allow :as at the top level of arglists
-        (error ":as")
-        {:arg-list (analyze-bind arg-list)
-         :variadic variadic?
-         :min-args n-pos
-         :max-args (if variadic? Integer/MAX_VALUE n-pos)}))))
+    (if (some #{:as} arg-list)
+      ;; Clojure doesn't allow :as at the top level of arglists
+      (error ":as")
+      {:arg-list (analyze-bind arg-list)
+       :positionals (->> arg-list
+                      (take-while (complement '#{&}))
+                      (count))
+       :variadic? (boolean (some '#{&} arg-list))})))
 
 (defn find-arg-syms [arg-list]
   (let [walk (fn walk [arg-list]
@@ -131,27 +137,60 @@
       (remove '#{&})
       (set))))
 
-(defn parse-definition
-  [form env]
-  (let [name (let [maybe-name (second form)]
-               (when (symbol? maybe-name)
-                 maybe-name))
-        [arg-list & body] (if name
-                            (nnext form)
-                            (next form))
-        arg-syms (find-arg-syms arg-list)]
-    (merge
-     {:name name
-      :form form
-      :arg-spec (analyze-arg-list arg-list)}
-     (let [syms (if name
-                  (conj arg-syms name)
-                  arg-syms)
-           env (-> env
-                 (assoc :context :expr)
-                 (update-in [:locals] conj syms))]
-       {:body {:statements (mapv (analyze-in env) (butlast body))
-               :return (analyze (last body) env)}}))))
+(defn parse-methods [name sigs env]
+  (letfn [(parse-method [[arg-list & body]]
+            (let [arg-spec (analyze-arg-list arg-list)
+                  syms (cond-> (find-arg-syms arg-list)
+                         name (conj name))
+                  env (-> env
+                        (assoc :context :expr)
+                        (update-in [:locals] conj syms))]
+              (assoc arg-spec
+                :statements (mapv (analyze-in env) (butlast body))
+                :return (analyze (last body) env))))]
+    (reduce (fn [result method]
+              (let [arity (if (:variadic? method)
+                            :variadic
+                            (:positionals method))]
+                (if (contains? result arity)
+                  (throw (Exception.
+                          (str "Duplicate fn signature"
+                               (when name ": " name))))
+                  (assoc result arity method))))
+            {}
+            (map parse-method sigs))))
+
+(defn parse-definition [form env]
+  (let [sigs (next form)
+        name (when (symbol? (first sigs))
+               (first sigs))
+        sigs (if name
+               (next sigs)
+               sigs)
+        sigs (if (vector? (first sigs))
+               (list sigs)
+               (if (and (seq? (first sigs))
+                        (vector? (ffirst sigs)))
+                 sigs
+                 (Exception.
+                  (str "Malformed definition"
+                       (when name ": " name)))))]
+    (let [method-table (parse-methods name sigs env)
+          arities (-> method-table keys set)
+          methods (vals method-table)
+          variadic (:variadic method-table)
+          max-fixed (some->> arities
+                      (filter number?)
+                      (seq)
+                      (reduce max))]
+      (when (and variadic
+                 max-fixed
+                 (< (:positionals variadic) max-fixed))
+        (throw (Exception. "Fixed arity fn with more params than variadic fn")))
+      {:name name
+       :form form
+       :arities arities
+       :methods method-table})))
 
 (defmethod parse 'fn
   [[op & more :as form] env]
@@ -163,10 +202,9 @@
      (parse-definition form env))))
 
 (defmethod parse 'defmacro
-  [[op target arg-list & body :as form] env]
+  [[op target & more :as form] env]
   {:pre [(symbol? target)
-         (vector? arg-list)
-         (every? symbol? arg-list)
+         (valid-fn-form? (cons 'fn more))
          (= (:context env) :toplevel)]}
   (let [env (assoc env :context :expr)]
     (merge
@@ -253,17 +291,16 @@
       (assoc base :op 'local :index index)
       (let [obj (get (:vars env) form ::not-found)]
         (cond (= obj ::not-found) (error "Unable to resolve symbol")
-              (:macro? (meta obj)) (error "Can't take the value of a macro")
+              (:macro? obj) (error "Can't take the value of a macro")
               :else (assoc base :op 'var :obj obj))))))
 
-(defn empty-env [& opts]
-  (merge
-   {:vars {}
-    :locals []
-    :context :toplevel
-    :expand (fn [& args]
-              (throw (Exception. "No macroexpansion function provided")))}
-   opts))
+(defn make-env [& opts]
+  (with-meta (merge {:vars {}
+                     :locals []
+                     :context :toplevel
+                     :expand identity}
+                    opts)
+    {:type ::env}))
 
 (defn analyze-in [env]
   (fn [form] (analyze form env)))
@@ -291,11 +328,3 @@
                                (parse form env)))
           :else (throw (Exception. (str "Unsupported form: " form))))))
 
-(defn show [m]
-  (reduce-kv (fn [result k v]
-               (assoc result
-                 k (cond (= k :env) 'ELIDED
-                         (map? v)   (show v)
-                         :else      v)))
-             {}
-             m))

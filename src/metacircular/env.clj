@@ -4,7 +4,8 @@
 
 (defn make-env
   ([] (make-env {}))
-  ([vars] {:vars (atom vars) :locals []}))
+  ([vars] (with-meta {:vars (atom vars) :locals []}
+            {:type ::env})))
 
 (defn def! [env sym val]
   (swap! (:vars env) assoc sym val)

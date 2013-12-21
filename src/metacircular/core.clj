@@ -4,7 +4,7 @@
             [clojure.java.io :as io]
             [clojure.walk :as walk]
             [metacircular.env :as env]
-            [metacircular.analyzer :refer [analyze analyze-arg-list]])
+            [metacircular.analyzer :as ana :refer [analyze analyze-arg-list]])
   (:import  (java.io Writer FileReader PushbackReader)))
 
 ;; -----------------------------------------------------------------------------
@@ -33,48 +33,51 @@
      clojure.string [blank? capitalize escape lower-case split split-lines trim
                      trim-newline triml trimr upper-case]}))
 
-(defn valid-args?
-  "Return true if op can be applied to args."
-  [op args]
-  (let [{:keys [min-args max-args]} (.arg-spec op)]
-    (<= min-args (count args) max-args)))
-
-(deftype Procedure [arg-spec statements return env metadata]
-  clojure.lang.IObj
-  (meta [_] metadata)
-  (withMeta [_ m] (Procedure. arg-spec statements return env m)))
-
-(defn make-procedure [arg-spec body env]
-  (let [{:keys [statements return]} body]
-    (Procedure. arg-spec statements return env {})))
-
-(defmethod print-method Procedure [o ^Writer w]
-  (.write w "#<")
-  (.write w (.getName (class o)))
-  (.write w ": ")
-  (if-let [name (-> o meta :name)]
-    (.write w (str name))
-    (.write w "[anonymous]"))
-  (.write w ">"))
+(defn make-procedure
+  [node env & {macro? :macro}]
+  (let [name (:name node)
+        methods (reduce-kv (fn [result arity node]
+                             (let [m (with-meta (assoc node :env env :name name)
+                                       {:type ::method})]
+                               (assoc result arity m)))
+                           {}
+                           (:methods node))]
+    (with-meta (merge (select-keys node [:name :arities])
+                      {:macro? macro?
+                       :methods methods})
+      {:type ::procedure})))
 
 (declare exec push-bindings)
+
+(defn find-method [f args]
+  (let [count (count args)]
+    (if-let [fixed (get (:methods f) count)]
+      fixed
+      (let [variadic (-> f :methods :variadic)]
+        (if (and variadic
+                 (>= count (:positionals variadic)))
+          variadic
+          (let [name (:name f)
+                desc (or name (if (:macro? f)
+                                "macro"
+                                "procedure"))]
+            (throw (Exception. (str "Wrong number of args for " desc)))))))))
 
 (defn -apply
   "Implementation of apply for Procedure."
   ;; Also inlined in exec to achieve tail call elimination
   ([op args]
-     (let [env (push-bindings op args)]
-       (doseq [e (.statements op)]
+     (let [method (find-method op args)
+           env (push-bindings op method args)]
+       (doseq [e (:statements method)]
          (exec e env))
-       (exec (.return op) env)))
+       (exec (:return method) env)))
   ([op a args] (-apply op (cons a args)))
   ([op a b args] (-apply op (list* a b args)))
   ([op a b c args] (-apply op (list* a b c args))))
 
-(defn procedure?
-  "Return true is a Procedure."
-  [x]
-  (instance? Procedure x))
+(defn procedure? [x]
+  (= (type x) ::procedure))
 
 (defn apply
   ([op args]
@@ -86,15 +89,12 @@
   ([op a b c args] (list* a b c args)))
 
 (defn invokable?
-  "Return true if x is a Procedure or implements IFn."
+  "Return true if x is a procedure or implements IFn."
   [x]
   (or (ifn? x) (procedure? x)))
 
-(defn macro?
-  "Return true if x is a Procedure with :macro? metadata."
-  [x]
-  (and (instance? Procedure x)
-       (boolean (-> x meta :macro?))))
+(defn macro? [x]
+  (and (procedure? x) (:macro? x)))
 
 ;; -----------------------------------------------------------------------------
 ;; Evaluation
@@ -145,12 +145,12 @@
                             form)))
 
 (defn analyzer-env [env & opts]
-  (merge
-   {:vars @(:vars env)
-    :locals []
-    :context :toplevel
-    :expand #(expand1 % env)}
-   opts))
+  (merge (ana/make-env)
+         {:vars @(:vars env)
+          :locals []
+          :context :toplevel
+          :expand #(expand1 % env)}
+         opts))
 
 (defn exec-in
   "Return a function which will exec AST nodes in env."
@@ -181,10 +181,9 @@
                           (clojure.lang.PersistentHashMap/create (seq vs))
                           vs)]
                  (loop [result result, items (:items node)]
-                   (if-let [[item & more] (seq items)]
-                     (let [[sym key default] item]
-                       (recur (process-bind result sym (get vs key default))
-                              more))
+                   (if-let [[[sym key default] & more] (seq items)]
+                     (recur (process-bind result sym (get vs key default))
+                            more)
                      (if-let [name (:name node)]
                        (assoc result name vs)
                        result)))))]
@@ -197,17 +196,12 @@
 
 (defn push-bindings
   "Return op's env extended with bindings for vals."
-  [op vals]
-  (let [meta (meta op)
-        name (:name meta)]
-    (if (valid-args? op vals)
-      (env/extend (.env op) (destructure (if name {name op} {})
-                                         (-> op .arg-spec :arg-list)
-                                         vals))
-      (let [desc (or name (if (:macro? meta)
-                            "macro"
-                            "procedure"))]
-        (throw (Exception. (str "Wrong number of args for " desc)))))))
+  [op method vals]
+  (let [name (:name op)]
+    (env/extend (:env method)
+      (destructure (if name {name op} {})
+                   (:arg-list method)
+                   vals))))
 
 (defn exec
   "Execute node, an AST node produced by metacircular.analyzer/analyze."
@@ -224,13 +218,9 @@
             (if (exec test env)
               (recur then env)
               (recur else env)))
-       fn (let [{:keys [name arg-spec body]} node]
-            (with-meta (make-procedure arg-spec body env)
-              {:name name}))
-       defmacro (let [{:keys [target name arg-spec body]} node
-                      val (with-meta (make-procedure arg-spec body env)
-                            {:name name
-                             :macro? true})]
+       fn (make-procedure node env)
+       defmacro (let [val (make-procedure node env :macro true)
+                      target (:target node)]
                   (env/def! env target val)
                   val)
        def (let [{:keys [target expr]} node
@@ -247,10 +237,12 @@
                       (recur (apply op args) env)
 
                       (procedure? op)
-                      (let [env (push-bindings op (map (exec-in env) args))]
-                        (doseq [e (.statements op)]
+                      (let [method (find-method op args)
+                            args (map (exec-in env) args)
+                            env (push-bindings op method args)]
+                        (doseq [e (:statements method)]
                           (exec e env))
-                        (recur (.return op) env))
+                        (recur (:return method) env))
 
                       (ifn? op)
                       (clj/apply op (map (exec-in env) args))
