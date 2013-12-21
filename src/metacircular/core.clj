@@ -132,7 +132,7 @@
 
 (defn expand1
   "Expand expr once and return the result. "
-  ([expr] (expand1 expr (env/copy @default-env)))
+  ([expr] (expand1 expr @default-env))
   ([expr env]
      (let [[_ obj] (env/find env (first expr))]
        (if (macro? obj)
@@ -141,7 +141,7 @@
 
 (defn expand
   "Fully expand expr (by calling expand1 repeatedly) and return the result. "
-  ([expr] (expand expr (env/copy @default-env)))
+  ([expr] (expand expr @default-env))
   ([expr env]
      (let [expanded (expand1 expr env)]
        (if (identical? expanded expr)
@@ -150,7 +150,7 @@
 
 (defn expand-all
   "Recursively perform all possible macroexpansions in form."
-  ([form] (expand-all form (env/copy @default-env)))
+  ([form] (expand-all form @default-env))
   ([form env] (walk/prewalk (fn [x] (if (seq? x) (expand x env) x))
                             form)))
 
@@ -217,7 +217,7 @@
 (defn exec
   "Execute node, an AST node produced by metacircular.analyzer/analyze."
   ([node]
-     (exec node (env/copy @default-env)))
+     (exec node @default-env))
   ([node env]
      (case (:op node)
        const (:form node)
@@ -261,8 +261,12 @@
                       :else
                       (throw (ex-info "Not a valid procedure"
                                       {:node node :env env}))))
-       vector (into [] (map (exec-in env) (:items node)))
-       set (into #{} (map (exec-in env) (:items node)))
+       vector (->> (:items node)
+                (map (exec-in env))
+                (into []))
+       set (->> (:items node)
+             (map (exec-in env))
+             (into #{}))
        map (zipmap (map (exec-in env) (:keys node))
                    (map (exec-in env) (:vals node)))
        (throw (ex-info "Invalid AST node" {:node node :env env})))))
@@ -271,7 +275,7 @@
   "Evaluate each expression in body and return the last expression's result.
   This is equivalent to wrapping exprs in a do form and using eval."
   [& body]
-  `(let [env# (env/copy @default-env)
+  `(let [env# @default-env
          exprs# '~body]
      (doseq [expr# (butlast exprs#)]
        (eval expr# env#))
@@ -291,7 +295,7 @@
 
 (defn load-file
   "Read and evaluate all forms in file. Return the resulting env."
-  ([file] (load-file file (env/copy @default-env)))
+  ([file] (load-file file @default-env))
   ([file env]
      (doseq [form (read-file file)]
        (eval form env))
@@ -313,7 +317,7 @@
          (reset! default-env env)))))
 
 (defn -eval
-  ([form] (-eval form (env/copy @default-env)))
+  ([form] (-eval form @default-env))
   ([form env]
      (let [a-env (analyzer-env env)]
        (-> form
@@ -324,7 +328,7 @@
   "Evaluate form and return the result."
   ([form]
      (load-core-env!)
-     (eval form (env/copy @default-env)))
+     (eval form @default-env))
   ([form env]
      (try (-eval form env)
           (catch Exception exc
@@ -339,7 +343,7 @@
   (fn [form] (eval form env)))
 
 (defn repl
-  ([] (repl (env/copy @default-env)))
+  ([] (repl @default-env))
   ([env]
      (let [exit? (comp boolean #{:exit :quit})
            forms (take-while (complement exit?) (repeatedly read))]
