@@ -286,13 +286,14 @@
 (defn analyze-symbol [form env]
   (let [env (assoc env :context :expr)
         base {:form form :env env}
-        error #(throw (ex-info % {:form form :env env}))]
+        error (fn [& args] (throw (ex-info (apply str args) base)))]
     (if-let [index (find-index env form)]
       (assoc base :op 'local :index index)
       (let [obj (get (:vars env) form ::not-found)]
-        (cond (= obj ::not-found) (error "Unable to resolve symbol")
-              (:macro? obj) (error "Can't take the value of a macro")
-              :else (assoc base :op 'var :obj obj))))))
+        (cond
+         (= obj ::not-found) (error "Unable to resolve symbol: " form)
+         (:macro? obj)       (error "Can't take the value of a macro: " form)
+         :else               (assoc base :op 'var :obj obj))))))
 
 (defn make-env [& opts]
   (with-meta (merge {:vars {}
