@@ -167,52 +167,46 @@
   [env]
   (fn [node] (exec node env)))
 
-(defn destructure
-  ([arg-list vals] (destructure {} arg-list vals))
-  ([target arg-list vals]
-     (letfn [(process-bind [result node v]
-               (case (:type node)
-                 symbol (assoc result (:form node) v)
-                 vector (process-vec result node v)
-                 map (process-map result node v)
-                 (throw (ex-info "Malformed binding node"
-                                 {:node node :val v}))))
-             (process-vec [result node vs]
-               (loop [result result, items (:items node), n 0]
-                 (if-let [[item & more] (seq items)]
-                   (recur (process-bind result item (nth vs n nil))
-                          more
-                          (inc n))
-                   (let [{:keys [rest name]} node]
-                     (cond-> result
-                       name (process-bind name vs)
-                       rest (process-bind rest (nthnext vs n)))))))
-             (process-map [result node vs]
-               (let [vs (if (seq? vs)
-                          (clojure.lang.PersistentHashMap/create (seq vs))
-                          vs)]
-                 (loop [result result, items (:items node)]
-                   (if-let [[[sym key default] & more] (seq items)]
-                     (recur (process-bind result sym (get vs key default))
-                            more)
-                     (if-let [name (:name node)]
-                       (assoc result name vs)
-                       result)))))]
-       (process-bind target arg-list vals))))
-
-(defn -destructure
-  ([arg-list vals] (-destructure {} arg-list vals))
-  ([target arg-list vals]
-     (destructure target (analyze-arg-list arg-list) vals)))
+(defn destructure [arg-list vals]
+  (letfn [(process-bind [result node v]
+            (case (:type node)
+              symbol (assoc result (:form node) v)
+              vector (process-vec result node v)
+              map (process-map result node v)
+              (throw (ex-info "Malformed binding node"
+                              {:node node :val v}))))
+          (process-vec [result node vs]
+            (loop [result result, items (:items node), n 0]
+              (if-let [[item & more] (seq items)]
+                (recur (process-bind result item (nth vs n nil))
+                       more
+                       (inc n))
+                (let [{:keys [rest name]} node]
+                  (cond-> result
+                    name (process-bind name vs)
+                    rest (process-bind rest (nthnext vs n)))))))
+          (process-map [result node vs]
+            (let [vs (if (seq? vs)
+                       (clojure.lang.PersistentHashMap/create (seq vs))
+                       vs)]
+              (loop [result result, items (:items node)]
+                (if-let [[[sym key default] & more] (seq items)]
+                  (recur (process-bind result sym (get vs key default))
+                         more)
+                  (if-let [name (:name node)]
+                    (assoc result name vs)
+                    result)))))]
+    (process-bind {} arg-list vals)))
 
 (defn push-bindings
   "Return op's env extended with bindings for vals."
   [method vals]
   (let [{:keys [procedure name]} method]
     (env/extend (:env method)
-      (destructure (if name {name @procedure} {})
-                   (:arg-list method)
-                   vals))))
+      (let [result (destructure (:arg-list method) vals)]
+        (if (and name (not (contains? result name)))
+          (assoc result name @procedure)
+          result)))))
 
 (defn exec
   "Execute node, an AST node produced by metacircular.analyzer/analyze."
