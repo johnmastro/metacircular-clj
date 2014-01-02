@@ -47,15 +47,14 @@
           coll))
 
 (defmacro let [bindings & body]
-  (when-not (even? (count bindings))
-    (error "let requires an even number of forms in binding vector"))
-  (reduce (fn [result binding]
-            (list (list 'fn
-                        (vector (first binding))
-                        result)
-                  (second binding)))
-          (cons 'do body)
-          (reverse (partition-all 2 bindings))))
+  ((fn emit [[[sym val :as binding] & more]]
+     (if (seq binding)
+       (list (list 'fn [sym] (emit more))
+             val)
+       (cons 'do body)))
+   (if (even? (count bindings))
+     (partition 2 bindings)
+     (error "let requires an even number of forms in binding vector"))))
 
 (defmacro when-let [bindings & body]
   (when-not (= (count bindings) 2)
@@ -77,33 +76,33 @@
              (list 'if sym then else)))))
 
 (defmacro cond [& clauses]
-  (reduce (fn [result clause]
-            (when-not (= (count clause) 2)
-              (error "odd number of clauses to cond"))
-            (list 'if (first clause) (second clause) result))
-          nil
-          (reverse (partition-all 2 clauses))))
+  (let [emit (fn emit [clauses]
+               (when-let [[test then & more] (seq clauses)]
+                 (list 'if test then (emit more))))]
+    (if (even? (count clauses))
+      (emit clauses)
+      (error "cond requires an even number of clauses"))))
 
 (defmacro condp [pred expr & clauses]
-  ;; TODO: See if I can clean this up
-  (let [reversed (reverse (partition-all 2 clauses))
-        default? (= (count (first reversed)) 1)
-        default (if default?
-                  (cons 'do (first reversed))
-                  (list 'error "condp: no matching clause"))
-        clauses (if default?
-                  (rest reversed)
-                  reversed)
+  (let [emit (fn emit [pred expr args]
+               (let [[[fst snd thd :as clause] more]
+                     (split-at (if (= (second args) :>>) 3 2)
+                               args)
+                     n (count clause)]
+                 (cond
+                  (= n 0) (list 'error (list 'str "no matching clause: " expr))
+                  (= n 1) fst
+                  (= n 2) (list 'if (list pred fst expr)
+                                snd
+                                (emit pred expr more))
+                  :else (let [sym (gensym)]
+                          (list 'if-let [sym (list pred fst expr)]
+                                (list thd sym)
+                                (emit pred expr more))))))
         pred-sym (gensym)
         expr-sym (gensym)]
     (list 'let [pred-sym pred expr-sym expr]
-          (reduce (fn [result clause]
-                    (list 'if
-                          (list pred-sym (first clause) expr-sym)
-                          (second clause)
-                          result))
-                  default
-                  clauses))))
+          (emit pred-sym expr-sym clauses))))
 
 (defmacro or
   ([] nil)
