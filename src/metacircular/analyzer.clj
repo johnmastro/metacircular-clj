@@ -102,9 +102,12 @@
                 :name nil}
                (analyze-more more))))
           (analyze-map [form]
-            (let [{keys :keys defaults :or} form
-                  mappings (into (dissoc form :or :as :keys)
-                                 (zipmap keys (map keyword keys)))
+            (let [{:keys [keys strs syms]} form
+                  defaults (:or form)
+                  mappings (merge (dissoc form :or :as :keys :strs :syms)
+                                  (zipmap keys (map keyword keys))
+                                  (zipmap strs (map str strs))
+                                  (zipmap syms syms))
                   make-tuple (fn [[sym key]]
                                [(analyze-bind sym)
                                 key
