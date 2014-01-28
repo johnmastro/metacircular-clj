@@ -1,0 +1,101 @@
+* metacircular-clj
+
+This is a simple metacircular evaluator/interpreter in Clojure.
+
+** Usage
+
+Evaluate expressions with =metacircular.core/eval=
+
+#+BEGIN_SRC clojure
+(require '[metacircular.core :as c])
+
+(c/eval '(map inc (range 10))) ;=> [1 2 3 4 5 6 7 8 9 10]
+#+END_SRC
+
+To analyze an expression, use =metacircular.analyzer/analyze=. Note that the
+relationship between the evaluation environment and the analyzer environment is
+a bit awkward, and that the map returned will be large.
+
+#+BEGIN_SRC clojure
+(defn elide-env [env]
+  (reduce-kv (fn [result k v]
+               (cond
+                (= k :env)  (assoc result k 'ENV)
+                (vector? v) (assoc result k (map elide-env v))
+                (map? v)    (assoc result k (elide-env v))
+                :else       (assoc result k v)))
+             {}
+             env))
+
+(let [env (-> @c/default-env (c/analyzer-env))]
+  (elide-env (a/analyze '(+ 1 1) env)))
+;=>
+{:args ({:env ENV, :form 1, :op const} {:env ENV, :form 1, :op const}),
+ :fn
+ {:env ENV,
+  :form +,
+  :op var,
+  :obj #<core$_PLUS_ clojure.core$_PLUS_@1af19d7>},
+ :env ENV,
+ :form (+ 1 1),
+ :op invoke}
+#+END_SRC
+
+=*print-length*= and =*print-level*= are both set low by default in
+=dev/user.clj= to keep large AST nodes from spamming the REPL.
+
+To execute an AST node as produced by =analyze=, use =metacircular.core/exec=
+
+#+BEGIN_SRC clojure
+(def node
+  (let [env (-> @c/default-env (c/analyzer-env))]
+    (a/analyze '(map inc (range 10)) env)))
+
+(c/exec node) ;=> [1 2 3 4 5 6 7 8 9 10]
+#+END_SRC
+
+** "Standard Library"
+
+A number of functions are pulled in from =clojure.core=, =clojure.set=, and
+=clojure.string= - see =metacircular.core/primitives= for the list.
+
+The rest of the standard library (mostly macros and higher order functions) are
+defined in =resources/core.mclj=.
+
+** Features
+
+- Higher order functions
+- Multiple-arity and variable-arity functions
+- Destructuring (with caveats)
+- Analyzer
+- Macros
+- Tail call elimination
+
+** Implementation Notes
+
+As few special operators are used as possible. Several operators which are
+special in Clojure are simple macros here (for instance, =let=, =do=, and
+=letfn=).
+
+Almost all of the "magic" is in =fn=. This gives the implementation a
+Scheme-like character in some ways, and may be influenced by the fact that I
+first encountered metacircular evaluators in [[http://www.amazon.com/The-Little-Schemer-4th-Edition/dp/0262560992][The Little Schemer]] and [[http://mitpress.mit.edu/sicp/][SICP]].
+
+Another Scheme-ism is that "vars" (really just globals) are immutable but =let=
+bindings are mutable. This is because it made it simple to implement =letfn= as
+a macro; otherwise it would have needed to be a special operator, which I
+wanted to avoid.
+
+Destructuring is implemented differently than in Clojure (it's a feature of
+=fn= rather than a macro) and, as a result, has somewhat different semantics.
+Specifically, /everything/ in the bindings spec is treated as a literal. So,
+for instance:
+
+#+BEGIN_SRC clojure
+(let [foo :the-foo
+      {:keys [x] :or {x foo}} {}]
+  x)
+
+;; in clojure, :the-foo
+;; in metacircular, the symbol foo
+#+END_SRC
