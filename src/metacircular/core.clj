@@ -358,10 +358,35 @@
   [env]
   (fn [form] (eval form env)))
 
+(defn read1
+  "Print a prompt and read a form."
+  ([] (read1 "* "))
+  ([prompt]
+     (doto *out*
+       (.write prompt)
+       (.flush))
+     (read)))
+
 (defn repl
+  "Start a read-eval-print loop.
+  Entering either :exit or :quit by itself terminates the REPL."
   ([] (repl @default-env))
   ([env]
      (let [exit? (comp boolean #{:exit :quit})
-           forms (take-while (complement exit?) (repeatedly read))]
+           forms (take-while (complement exit?) (repeatedly read1))]
        (doseq [form forms]
-         (prn (eval form env))))))
+         (try (prn (eval form env))
+              (catch Exception exc
+                (println "Error:" (.getMessage exc))))))))
+
+(def banner "metacircular-clj REPL (enter :exit to leave)")
+
+(defn print-banner []
+  (println banner)
+  (println (apply str (repeat (count banner) "-")))
+  (newline))
+
+(defn -main [& _]
+  (load-core-env!)
+  (print-banner)
+  (repl))
