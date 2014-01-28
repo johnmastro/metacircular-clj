@@ -34,6 +34,9 @@
                      trim-newline triml trimr upper-case]}))
 
 (defn make-procedure
+  "Create and return a procedure object from an AST node.
+  With a :macro keyword argument the procedure will be a macro, otherwise a
+  normal function."
   [node env & {macro? :macro}]
   (let [name (:name node)
         make-method #(with-meta (assoc %
@@ -56,7 +59,10 @@
       (reset! (-> entry val :procedure) procedure))
     procedure))
 
-(defn find-method [f args]
+(defn find-method
+  "Return the appropriate method (arity) of f for args.
+  Throw an exception if there is no matching method."
+  [f args]
   (let [count (count args)]
     (if-let [fixed (get (:methods f) count)]
       fixed
@@ -86,10 +92,13 @@
   ([op a b args] (-apply op (list* a b args)))
   ([op a b c args] (-apply op (list* a b c args))))
 
-(defn procedure? [x]
+(defn procedure?
+  "Return true if x is a procedure map."
+  [x]
   (= (type x) ::procedure))
 
 (defn apply
+  "Apply op to args."
   ([op args]
      (if (procedure? op)
        (-apply op args)
@@ -103,7 +112,9 @@
   [x]
   (or (ifn? x) (procedure? x)))
 
-(defn macro? [x]
+(defn macro?
+  "Return true if x is a procedure which is a macro."
+  [x]
   (and (procedure? x) (:macro? x)))
 
 ;; -----------------------------------------------------------------------------
@@ -154,7 +165,10 @@
   ([form env] (walk/prewalk (fn [x] (if (seq? x) (expand x env) x))
                             form)))
 
-(defn analyzer-env [env & opts]
+(defn analyzer-env
+  "Return an appropriate analyzer environment based on env (an evaluation
+  environment) and opts (a map)."
+  [env & opts]
   (merge (ana/make-env)
          {:vars @(:vars env)
           :locals []
@@ -167,7 +181,10 @@
   [env]
   (fn [node] (exec node env)))
 
-(defn destructure [arg-list vals]
+(defn destructure
+  "Destructure vals as per arg-list.
+  arg-list must be an AST node as returned by analyze-arg-list."
+  [arg-list vals]
   (letfn [(process-bind [result node v]
             (case (:type node)
               symbol (assoc result (:form node) v)
@@ -297,11 +314,16 @@
 
 (def core-env (atom nil))
 
-(defn load-core-env []
+(defn load-core-env
+  "Use load-file to load core.mclj. Return the resulting env."
+  []
   (let [core-file (io/file (.getPath (io/resource "core.mclj")))]
     (load-file core-file)))
 
 (defn load-core-env!
+  "Load the core env and make it the default-env.
+  If reload? then do so unconditionally; otherwise, only do so if the
+  default-env is currently nil."
   ([] (load-core-env! nil))
   ([reload?]
      (when (or (not @core-env)
