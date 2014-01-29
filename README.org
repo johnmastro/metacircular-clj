@@ -28,7 +28,7 @@ relationship between the evaluation environment and the analyzer environment is
 a bit awkward, and that the map returned will be large.
 
 #+BEGIN_SRC clojure
-(defn elide-env [env]
+(defn elide-env [node]
   (reduce-kv (fn [result k v]
                (cond
                 (= k :env)  (assoc result k 'ENV)
@@ -36,7 +36,7 @@ a bit awkward, and that the map returned will be large.
                 (map? v)    (assoc result k (elide-env v))
                 :else       (assoc result k v)))
              {}
-             env))
+             node))
 
 (let [env (-> @c/default-env (c/analyzer-env))]
   (elide-env (a/analyze '(+ 1 1) env)))
