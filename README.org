@@ -65,6 +65,17 @@ To execute an AST node as produced by =analyze=, use =metacircular.core/exec=
 (c/exec node) ;=> [1 2 3 4 5 6 7 8 9 10]
 #+END_SRC
 
+View macroexpansions with =metacircular.core/expand1=,
+=metacircular.core/expand=, and =metacircular.core/expand-all=
+
+#+BEGIN_SRC clojure
+(def form '(->> (range 10) (filter even?) (map inc)))
+
+(c/expand1 form)    ;=> (->> (->> (range 10) (filter even?)) (map inc))
+(c/expand form)     ;=> (map inc (->> (range 10) (filter even?)))
+(c/expand-all form) ;=> (map inc (filter even? (range 10)))
+#+END_SRC
+
 ** "Standard Library"
 
 A number of functions are pulled in from =clojure.core=, =clojure.set=, and
