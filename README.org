@@ -4,6 +4,17 @@ This is a simple metacircular evaluator/interpreter in Clojure.
 
 ** Usage
 
+Launch a REPL with =lein run=
+
+#+BEGIN_SRC
+$ lein run
+metacircular-clj REPL (enter :exit to leave)
+--------------------------------------------
+
+* (->> (range 10) (filter even?) (map inc))
+[1 3 5 7 9]
+#+END_SRC
+
 Evaluate expressions with =metacircular.core/eval=
 
 #+BEGIN_SRC clojure
